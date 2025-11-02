@@ -10,7 +10,7 @@ from typing import List, Optional
 JWT_SECRET = "CHANGE_ME_SUPER_SECRET"  # set in Render ENV as well
 JWT_ALG = "HS256"
 ALLOWED_ORIGINS = [
-    "http://YOUR-S3-WEBSITE-ENDPOINT",   # e.g. http://lvl-set-tms.s3-website.us-east-2.amazonaws.com
+    "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",   # e.g. http://lvl-set-tms.s3-website.us-east-2.amazonaws.com
     "https://YOUR-CUSTOM-DOMAIN",        # if/when you add one
 ]
 
@@ -19,11 +19,12 @@ app = FastAPI(title="TB&S TMS API", version="0.1")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=[S3_WEBSITE],          # add other origins if you have a custom domain
     allow_credentials=True,
     allow_methods=["GET","POST","PUT","DELETE","OPTIONS"],
     allow_headers=["Authorization","Content-Type"],
-    expose_headers=["Content-Disposition"],
+    expose_headers=["Content-Disposition"],  # for CSV downloads
+    max_age=86400,  # cache preflight for 24h
 )
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -107,3 +108,4 @@ def delete_driver(driver_id: str):
     if len(_DRIVERS) == before:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
+
