@@ -5,9 +5,10 @@ from pydantic import BaseModel
 from passlib.context import CryptContext
 import jwt, time
 from typing import List, Optional
+from fastapi.middleware.cors import CORSMiddleware
 
 # --- Config ---
-JWT_SECRET = "CHANGE_ME_SUPER_SECRET"  # set in Render ENV as well
+JWT_SECRET = "transportationmanagementsystem"  # set in Render ENV as well
 JWT_ALG = "HS256"
 ALLOWED_ORIGINS = [
     "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",   # e.g. http://lvl-set-tms.s3-website.us-east-2.amazonaws.com
@@ -108,4 +109,6 @@ def delete_driver(driver_id: str):
     if len(_DRIVERS) == before:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
+
+
 
