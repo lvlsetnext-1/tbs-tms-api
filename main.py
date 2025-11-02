@@ -1,37 +1,43 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from typing import List, Optional
+
+import time
+import jwt
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
 from passlib.context import CryptContext
-import jwt, time
-from typing import List, Optional
-from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# --- Config ---
-JWT_SECRET = "transportationmanagementsystem"  # set in Render ENV as well
+# -----------------------------
+# Config
+# -----------------------------
+# In Render, also set ENV var JWT_SECRET to the same value (or omit here and read from os.getenv)
+JWT_SECRET = "transportationmanagementsystem"
 JWT_ALG = "HS256"
+
 ALLOWED_ORIGINS = [
-    "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",   # e.g. http://lvl-set-tms.s3-website.us-east-2.amazonaws.com
-    "https://YOUR-CUSTOM-DOMAIN",        # if/when you add one
+    "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",  # your S3 Website endpoint (http)
+    # "https://your-custom-domain.com",  # add when you have one
 ]
 
-# --- App ---
+# -----------------------------
+# App & CORS
+# -----------------------------
 app = FastAPI(title="TB&S TMS API", version="0.1")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[S3_WEBSITE],          # add other origins if you have a custom domain
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET","POST","PUT","DELETE","OPTIONS"],
-    allow_headers=["Authorization","Content-Type"],
-    expose_headers=["Content-Disposition"],  # for CSV downloads
-    max_age=86400,  # cache preflight for 24h
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Content-Disposition"],
+    max_age=86400,
 )
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# In-memory users to start (we’ll replace with Neon later)
-# password for all = "test123"
+# Demo users (password for all = "test123")
 USERS = {
     "admin@tbs.local": {"hash": pwd.hash("test123"), "role": "admin"},
     "dispatch@tbs.local": {"hash": pwd.hash("test123"), "role": "dispatcher"},
@@ -40,7 +46,7 @@ USERS = {
 
 def make_token(email: str, role: str) -> str:
     now = int(time.time())
-    payload = {"sub": email, "role": role, "iat": now, "exp": now + 60*60*8}
+    payload = {"sub": email, "role": role, "iat": now, "exp": now + 60 * 60 * 8}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 def verify_token(token: str):
@@ -50,18 +56,18 @@ def verify_token(token: str):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 def guard(*roles):
-    def _wrap(clb):
-        def _dep(authorization: Optional[str] = None):
-            if not authorization or not authorization.lower().startswith("bearer "):
-                raise HTTPException(status_code=401, detail="Missing token")
-            claims = verify_token(authorization.split(" ",1)[1])
-            if roles and claims.get("role") not in roles:
-                raise HTTPException(status_code=403, detail="Forbidden")
-            return claims
-        return Depends(_dep)
-    return _wrap
+    async def _dep(authorization: Optional[str] = Header(default=None)):
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail="Missing token")
+        claims = verify_token(authorization.split(" ", 1)[1])
+        if roles and claims.get("role") not in roles:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return claims
+    return Depends(_dep)
 
-# ---- Models (lightweight for now) ----
+# -----------------------------
+# Models
+# -----------------------------
 class DriverIn(BaseModel):
     name: str
     licenseNo: Optional[str] = None
@@ -71,15 +77,18 @@ class DriverIn(BaseModel):
 class DriverOut(DriverIn):
     id: str
 
-# In-memory data so the UI works immediately
+# In-memory seed so the UI works
 _DRIVERS = [
     {"id": "d1", "name": "Ava Johnson", "licenseNo": "GA-1234", "phone": "404-555-0101", "payRate": 0.62},
     {"id": "d2", "name": "Marcus Lee", "licenseNo": "GA-5678", "phone": "470-555-0147", "payRate": 0.65},
 ]
 
-# ---- Routes ----
+# -----------------------------
+# Routes
+# -----------------------------
 @app.get("/v1/health")
-def health(): return {"ok": True, "service": "tbs-api"}
+def health():
+    return {"ok": True, "service": "tbs-api"}
 
 @app.post("/v1/auth/login")
 def login(form: OAuth2PasswordRequestForm = Depends()):
@@ -90,14 +99,14 @@ def login(form: OAuth2PasswordRequestForm = Depends()):
     token = make_token(email, user["role"])
     return {"accessToken": token, "role": user["role"]}
 
-@app.get("/v1/drivers", response_model=List[DriverOut], dependencies=[guard("admin","dispatcher","viewer")])
+@app.get("/v1/drivers", response_model=List[DriverOut], dependencies=[guard("admin", "dispatcher", "viewer")])
 def list_drivers():
     return _DRIVERS
 
-@app.post("/v1/drivers", response_model=DriverOut, dependencies=[guard("admin","dispatcher")])
+@app.post("/v1/drivers", response_model=DriverOut, dependencies=[guard("admin", "dispatcher")])
 def create_driver(d: DriverIn):
     new = d.dict()
-    new["id"] = f"d{len(_DRIVERS)+1}"
+    new["id"] = f"d{len(_DRIVERS) + 1}"
     _DRIVERS.append(new)
     return new
 
@@ -109,6 +118,8 @@ def delete_driver(driver_id: str):
     if len(_DRIVERS) == before:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
+
+
 
 
 
