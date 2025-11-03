@@ -73,6 +73,20 @@ _DRIVERS = [
     {"id": "d1", "name": "Ava Johnson", "licenseNo": "GA-1234", "phone": "404-555-0101", "payRate": 0.62},
     {"id": "d2", "name": "Marcus Lee", "licenseNo": "GA-5678", "phone": "470-555-0147", "payRate": 0.65},
 ]
+class LoadIn(BaseModel):
+    orderNo: str
+    status: str = "scheduled"     # scheduled | in_transit | delivered | canceled
+    driver: Optional[str] = None  # driver id or name
+    truck: Optional[str] = None
+    rate: Optional[float] = 0.0
+
+class LoadOut(LoadIn):
+    id: str
+
+_LOADS = [
+    {"id": "l1", "orderNo": "ORD-1001", "status": "scheduled", "driver": "Ava Johnson", "truck": "Truck 12", "rate": 1250.0},
+    {"id": "l2", "orderNo": "ORD-1002", "status": "in_transit", "driver": "Marcus Lee", "truck": "Truck 08", "rate": 980.0},
+]
 
 # ----------------- Routes -----------------
 @app.get("/v1/health")
@@ -100,5 +114,24 @@ def delete_driver(driver_id: str):
     before = len(_DRIVERS)
     _DRIVERS = [x for x in _DRIVERS if x["id"] != driver_id]
     if len(_DRIVERS) == before: raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+@app.get("/v1/loads", response_model=List[LoadOut], dependencies=[guard("admin","dispatcher","viewer")])
+def list_loads():
+    return _LOADS
+
+@app.post("/v1/loads", response_model=LoadOut, dependencies=[guard("admin","dispatcher")])
+def create_load(l: LoadIn):
+    new = l.dict()
+    new["id"] = f"l{len(_LOADS)+1}"
+    _LOADS.append(new)
+    return new
+
+@app.delete("/v1/loads/{load_id}", dependencies=[guard("admin")])
+def delete_load(load_id: str):
+    global _LOADS
+    before = len(_LOADS)
+    _LOADS = [x for x in _LOADS if x["id"] != load_id]
+    if len(_LOADS) == before:
+        raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 
