@@ -28,7 +28,7 @@ app.add_middleware(
     max_age=86400,
 )
 
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # Demo users (password for all = "test123")
 USERS = {
