@@ -43,7 +43,7 @@ USERS: Dict[str, Dict[str, Any]] = {
 # -------------------------------------------------------------------
 # App + CORS
 # -------------------------------------------------------------------
-app = FastAPI(title="TB&S TMS API", version="0.3")
+app = FastAPI(title="TB&S TMS API", version="0.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,7 +56,7 @@ app.add_middleware(
 )
 
 # -------------------------------------------------------------------
-# JWT helpers
+# JWT helpers & guard
 # -------------------------------------------------------------------
 def create_access_token(email: str, role: str) -> str:
     now = int(time.time())
@@ -114,14 +114,14 @@ class DriverOut(DriverIn):
 class LoadIn(BaseModel):
     orderNo: str
     status: str = "scheduled"     # scheduled | in_transit | delivered | etc
-    driver: Optional[str] = None
+    driver: Optional[str] = None  # stores the driver name
     truck: Optional[str] = None
     rate: Optional[float] = 0.0
 
 
 class LoadOut(LoadIn):
     id: str
-    # BR-DRV-001: highlight loads whose driver was deleted
+    # BR-DRV-008 / BR-DRV-009: highlight loads whose driver was edited/deleted
     driverOrphaned: bool = False
 
 # -------------------------------------------------------------------
@@ -191,6 +191,16 @@ def list_drivers():
     dependencies=[guard("admin", "dispatcher")],
 )
 def create_driver(d: DriverIn):
+    # BR-DRV-002 / BR-DRV-006 validations (lightweight for prototype)
+    if not d.name or len(d.name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
+    if not d.licenseNo:
+        raise HTTPException(status_code=400, detail="License # is required")
+    if not d.phone:
+        raise HTTPException(status_code=400, detail="Phone is required")
+    if d.payRate is None or d.payRate <= 0:
+        raise HTTPException(status_code=400, detail="Pay rate must be > 0")
+
     new = d.dict()
     new["id"] = f"d{len(_DRIVERS) + 1}"
     _DRIVERS.append(new)
@@ -203,25 +213,59 @@ def create_driver(d: DriverIn):
     dependencies=[guard("admin", "dispatcher")],
 )
 def update_driver(driver_id: str, d: DriverIn):
+    """
+    BR-DRV-004 / BR-DRV-007 / BR-DRV-008
+
+    - Update driver record.
+    - Propagate driver name changes to Loads (so Loads always show current driver name).
+    - Highlight all loads that reference this driver (driverOrphaned = True)
+      so users can review impacted loads.
+    """
+    global _LOADS
+
+    # Basic validation (same rules as create)
+    if not d.name or len(d.name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
+    if not d.licenseNo:
+        raise HTTPException(status_code=400, detail="License # is required")
+    if not d.phone:
+        raise HTTPException(status_code=400, detail="Phone is required")
+    if d.payRate is None or d.payRate <= 0:
+        raise HTTPException(status_code=400, detail="Pay rate must be > 0")
+
     for drv in _DRIVERS:
         if drv["id"] == driver_id:
+            old_name = drv["name"]
             data = d.dict()
             drv.update(data)
             drv["id"] = driver_id
+
+            # BR-DRV-007: propagate changes to loads
+            for load in _LOADS:
+                if load.get("driver") == old_name:
+                    # update the displayed driver name if the name changed
+                    load["driver"] = d.name
+                    # BR-DRV-008: highlight impacted loads
+                    load["driverOrphaned"] = True
+
             return drv
+
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 @app.delete(
     "/v1/drivers/{driver_id}",
-    # Admin + dispatcher allowed to delete
+    # Admin + dispatcher allowed to delete (BR-DRV-005 / BR-DRV-009)
     dependencies=[guard("admin", "dispatcher")],
 )
 def delete_driver(driver_id: str):
     """
-    BR-DRV-001:
-    When a driver is deleted, any loads whose `driver` field matches
-    that driver's name are flagged as `driverOrphaned = True`.
+    BR-DRV-005 / BR-DRV-009 / BR-DRV-001:
+
+    - Delete driver record.
+    - Retain driver name on associated loads (orphaned reference).
+    - Flag all loads that reference this driver (driverOrphaned = True)
+      so they render highlighted on Loads page.
     """
     global _DRIVERS, _LOADS
 
@@ -238,7 +282,7 @@ def delete_driver(driver_id: str):
 
     _DRIVERS = remaining
 
-    # Apply orphan flag to loads using this driver name
+    # Mark loads with this driver as orphaned
     for load in _LOADS:
         if load.get("driver") == deleted_name:
             load["driverOrphaned"] = True
@@ -265,6 +309,7 @@ def list_loads():
 def create_load(l: LoadIn):
     new = l.dict()
     new["id"] = f"l{len(_LOADS) + 1}"
+    # New loads are not orphaned on create
     new.setdefault("driverOrphaned", False)
     _LOADS.append(new)
     return new
@@ -277,8 +322,9 @@ def create_load(l: LoadIn):
 )
 def update_load(load_id: str, l: LoadIn):
     """
-    If a load is edited and the driver value changes, clear the orphan flag.
-    This implements the "highlight until resolved" part of BR-DRV-001.
+    - Update load.
+    - If driver value changes (reassignment), clear driverOrphaned flag
+      so highlight disappears once the load is resolved (BR-DRV-008).
     """
     for load in _LOADS:
         if load["id"] == load_id:
@@ -286,12 +332,13 @@ def update_load(load_id: str, l: LoadIn):
             data = l.dict()
             load.update(data)
 
-            # Resolve orphan flag if driver changed or cleared
+            # Resolve highlight when driver is changed or cleared
             if load.get("driver") != prev_driver:
                 load["driverOrphaned"] = False
 
             load["id"] = load_id
             return load
+
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
@@ -306,6 +353,3 @@ def delete_load(load_id: str):
     if len(_LOADS) == before:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {"ok": True}
-
-
-
