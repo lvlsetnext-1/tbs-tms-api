@@ -198,7 +198,7 @@ def update_driver(driver_id: str, d: DriverIn):
 
 @app.delete(
     "/v1/drivers/{driver_id}",
-    dependencies=[guard("admin")],
+    dependencies=[guard("admin", "dispatcher")],
 )
 def delete_driver(driver_id: str):
     global _DRIVERS
