@@ -43,7 +43,7 @@ USERS: Dict[str, Dict[str, Any]] = {
 # -------------------------------------------------------------------
 # App + CORS
 # -------------------------------------------------------------------
-app = FastAPI(title="TB&S TMS API", version="0.2")
+app = FastAPI(title="TB&S TMS API", version="0.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -113,7 +113,7 @@ class DriverOut(DriverIn):
 
 class LoadIn(BaseModel):
     orderNo: str
-    status: str = "scheduled"     # scheduled | in_transit | delivered | canceled | etc
+    status: str = "scheduled"     # scheduled | in_transit | delivered | etc
     driver: Optional[str] = None
     truck: Optional[str] = None
     rate: Optional[float] = 0.0
@@ -121,6 +121,8 @@ class LoadIn(BaseModel):
 
 class LoadOut(LoadIn):
     id: str
+    # BR-DRV-001: highlight loads whose driver was deleted
+    driverOrphaned: bool = False
 
 # -------------------------------------------------------------------
 # In-memory data (for prototype)
@@ -131,8 +133,24 @@ _DRIVERS: List[Dict[str, Any]] = [
 ]
 
 _LOADS: List[Dict[str, Any]] = [
-    {"id": "l1", "orderNo": "ORD-1001", "status": "scheduled", "driver": "Ava Johnson", "truck": "Truck 12", "rate": 1250.0},
-    {"id": "l2", "orderNo": "ORD-1002", "status": "in_transit", "driver": "Marcus Lee", "truck": "Truck 08", "rate": 980.0},
+    {
+        "id": "l1",
+        "orderNo": "ORD-1001",
+        "status": "scheduled",
+        "driver": "Ava Johnson",
+        "truck": "Truck 12",
+        "rate": 1250.0,
+        "driverOrphaned": False,
+    },
+    {
+        "id": "l2",
+        "orderNo": "ORD-1002",
+        "status": "in_transit",
+        "driver": "Marcus Lee",
+        "truck": "Truck 08",
+        "rate": 980.0,
+        "driverOrphaned": False,
+    },
 ]
 
 # -------------------------------------------------------------------
@@ -142,13 +160,11 @@ _LOADS: List[Dict[str, Any]] = [
 def health():
     return {"ok": True, "service": "tbs-api"}
 
-
 # -------------------------------------------------------------------
 # Auth
 # -------------------------------------------------------------------
 @app.post("/v1/auth/login")
 async def login(form: OAuth2PasswordRequestForm = Depends()):
-    # form.username, form.password
     email = form.username
     user = USERS.get(email)
     if not user or not pwd_context.verify(form.password, user["hash"]):
@@ -198,15 +214,36 @@ def update_driver(driver_id: str, d: DriverIn):
 
 @app.delete(
     "/v1/drivers/{driver_id}",
+    # Admin + dispatcher allowed to delete
     dependencies=[guard("admin", "dispatcher")],
 )
 def delete_driver(driver_id: str):
-    global _DRIVERS
-    before = len(_DRIVERS)
-    _DRIVERS = [x for x in _DRIVERS if x["id"] != driver_id]
-    if len(_DRIVERS) == before:
+    """
+    BR-DRV-001:
+    When a driver is deleted, any loads whose `driver` field matches
+    that driver's name are flagged as `driverOrphaned = True`.
+    """
+    global _DRIVERS, _LOADS
+
+    deleted_name: Optional[str] = None
+    remaining: List[Dict[str, Any]] = []
+    for drv in _DRIVERS:
+        if drv["id"] == driver_id:
+            deleted_name = drv["name"]
+        else:
+            remaining.append(drv)
+
+    if deleted_name is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return {"ok": True}
+
+    _DRIVERS = remaining
+
+    # Apply orphan flag to loads using this driver name
+    for load in _LOADS:
+        if load.get("driver") == deleted_name:
+            load["driverOrphaned"] = True
+
+    return {"ok": True, "deletedDriver": deleted_name}
 
 # -------------------------------------------------------------------
 # Loads
@@ -228,6 +265,7 @@ def list_loads():
 def create_load(l: LoadIn):
     new = l.dict()
     new["id"] = f"l{len(_LOADS) + 1}"
+    new.setdefault("driverOrphaned", False)
     _LOADS.append(new)
     return new
 
@@ -238,10 +276,20 @@ def create_load(l: LoadIn):
     dependencies=[guard("admin", "dispatcher")],
 )
 def update_load(load_id: str, l: LoadIn):
+    """
+    If a load is edited and the driver value changes, clear the orphan flag.
+    This implements the "highlight until resolved" part of BR-DRV-001.
+    """
     for load in _LOADS:
         if load["id"] == load_id:
+            prev_driver = load.get("driver")
             data = l.dict()
             load.update(data)
+
+            # Resolve orphan flag if driver changed or cleared
+            if load.get("driver") != prev_driver:
+                load["driverOrphaned"] = False
+
             load["id"] = load_id
             return load
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -258,5 +306,6 @@ def delete_load(load_id: str):
     if len(_LOADS) == before:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {"ok": True}
+
 
 
