@@ -43,7 +43,7 @@ USERS: Dict[str, Dict[str, Any]] = {
 # -------------------------------------------------------------------
 # App + CORS
 # -------------------------------------------------------------------
-app = FastAPI(title="TB&S TMS API", version="0.4")
+app = FastAPI(title="TB&S TMS API", version="0.5")
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,9 +112,9 @@ class DriverOut(DriverIn):
 
 
 class LoadIn(BaseModel):
-    orderNo: str
-    status: str = "scheduled"     # scheduled | in_transit | delivered | etc
-    driver: Optional[str] = None  # stores the driver name
+    orderNo: Optional[str] = None  # may be auto-assigned
+    status: str = "scheduled"      # scheduled | in_transit | delivered | etc
+    driver: Optional[str] = None   # stores the driver name
     truck: Optional[str] = None
     rate: Optional[float] = 0.0
 
@@ -154,6 +154,26 @@ _LOADS: List[Dict[str, Any]] = [
 ]
 
 # -------------------------------------------------------------------
+# Helper: generate next Order #
+# -------------------------------------------------------------------
+def _next_order_no() -> str:
+    """
+    Generate a simple sequential order number like ORD-1003
+    based on existing _LOADS entries.
+    """
+    max_n = 1000
+    for l in _LOADS:
+        o = l.get("orderNo")
+        if isinstance(o, str) and o.startswith("ORD-"):
+            try:
+                n = int(o.split("-")[1])
+                if n > max_n:
+                    max_n = n
+            except ValueError:
+                continue
+    return f"ORD-{max_n + 1}"
+
+# -------------------------------------------------------------------
 # Health
 # -------------------------------------------------------------------
 @app.get("/v1/health")
@@ -174,7 +194,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     return {"accessToken": token, "role": user["role"]}
 
 # -------------------------------------------------------------------
-# Drivers
+# Drivers (dispatcher-facing entry surface)
 # -------------------------------------------------------------------
 @app.get(
     "/v1/drivers",
@@ -191,7 +211,16 @@ def list_drivers():
     dependencies=[guard("admin", "dispatcher")],
 )
 def create_driver(d: DriverIn):
-    # BR-DRV-002 / BR-DRV-006 validations (lightweight for prototype)
+    """
+    BR-DRV-002 / BR-DRV-006 / BR-DRV-007:
+
+    - Validate and create a new driver record.
+    - ALSO create a corresponding Load record so it immediately appears
+      on the Loads page with a unique Order # and the same driver info.
+    """
+    global _LOADS
+
+    # Basic validation
     if not d.name or len(d.name.strip()) < 2:
         raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
     if not d.licenseNo:
@@ -201,9 +230,24 @@ def create_driver(d: DriverIn):
     if d.payRate is None or d.payRate <= 0:
         raise HTTPException(status_code=400, detail="Pay rate must be > 0")
 
+    # Create driver record
     new = d.dict()
     new["id"] = f"d{len(_DRIVERS) + 1}"
     _DRIVERS.append(new)
+
+    # Create corresponding load so it shows on Loads page
+    order_no = _next_order_no()
+    load = {
+        "id": f"l{len(_LOADS) + 1}",
+        "orderNo": order_no,
+        "status": "scheduled",
+        "driver": d.name,
+        "truck": "",
+        "rate": d.payRate or 0.0,
+        "driverOrphaned": False,
+    }
+    _LOADS.append(load)
+
     return new
 
 
@@ -214,16 +258,16 @@ def create_driver(d: DriverIn):
 )
 def update_driver(driver_id: str, d: DriverIn):
     """
-    BR-DRV-004 / BR-DRV-007 / BR-DRV-008
+    BR-DRV-004 / BR-DRV-006 / BR-DRV-007 / BR-DRV-008
 
     - Update driver record.
-    - Propagate driver name changes to Loads (so Loads always show current driver name).
-    - Highlight all loads that reference this driver (driverOrphaned = True)
-      so users can review impacted loads.
+    - Propagate driver name and pay rate changes to all related loads,
+      so Loads immediately reflects Dispatch edits.
+    - Highlight affected loads (driverOrphaned = True) so they are visible.
     """
     global _LOADS
 
-    # Basic validation (same rules as create)
+    # Basic validation
     if not d.name or len(d.name.strip()) < 2:
         raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
     if not d.licenseNo:
@@ -240,12 +284,13 @@ def update_driver(driver_id: str, d: DriverIn):
             drv.update(data)
             drv["id"] = driver_id
 
-            # BR-DRV-007: propagate changes to loads
+            # Propagate updates to loads
             for load in _LOADS:
                 if load.get("driver") == old_name:
-                    # update the displayed driver name if the name changed
                     load["driver"] = d.name
-                    # BR-DRV-008: highlight impacted loads
+                    # Use pay rate as the load rate for now
+                    load["rate"] = d.payRate or 0.0
+                    # Highlight impacted loads
                     load["driverOrphaned"] = True
 
             return drv
@@ -255,17 +300,16 @@ def update_driver(driver_id: str, d: DriverIn):
 
 @app.delete(
     "/v1/drivers/{driver_id}",
-    # Admin + dispatcher allowed to delete (BR-DRV-005 / BR-DRV-009)
+    # Admin + dispatcher allowed to delete
     dependencies=[guard("admin", "dispatcher")],
 )
 def delete_driver(driver_id: str):
     """
-    BR-DRV-005 / BR-DRV-009 / BR-DRV-001:
+    BR-DRV-005 / BR-DRV-009:
 
     - Delete driver record.
-    - Retain driver name on associated loads (orphaned reference).
-    - Flag all loads that reference this driver (driverOrphaned = True)
-      so they render highlighted on Loads page.
+    - Keep loads but mark them as impacted (driverOrphaned = True),
+      so the dispatcher can see which loads are tied to a deleted driver.
     """
     global _DRIVERS, _LOADS
 
@@ -290,7 +334,7 @@ def delete_driver(driver_id: str):
     return {"ok": True, "deletedDriver": deleted_name}
 
 # -------------------------------------------------------------------
-# Loads
+# Loads (schedule / downstream view)
 # -------------------------------------------------------------------
 @app.get(
     "/v1/loads",
@@ -307,9 +351,14 @@ def list_loads():
     dependencies=[guard("admin", "dispatcher")],
 )
 def create_load(l: LoadIn):
+    """
+    Manual creation from Loads page.
+    If orderNo is missing, assign a new unique one.
+    """
     new = l.dict()
+    if not new.get("orderNo"):
+        new["orderNo"] = _next_order_no()
     new["id"] = f"l{len(_LOADS) + 1}"
-    # New loads are not orphaned on create
     new.setdefault("driverOrphaned", False)
     _LOADS.append(new)
     return new
@@ -324,13 +373,17 @@ def update_load(load_id: str, l: LoadIn):
     """
     - Update load.
     - If driver value changes (reassignment), clear driverOrphaned flag
-      so highlight disappears once the load is resolved (BR-DRV-008).
+      so highlight disappears once the load is resolved.
     """
     for load in _LOADS:
         if load["id"] == load_id:
             prev_driver = load.get("driver")
             data = l.dict()
             load.update(data)
+
+            # Assign Order # if not set
+            if not load.get("orderNo"):
+                load["orderNo"] = _next_order_no()
 
             # Resolve highlight when driver is changed or cleared
             if load.get("driver") != prev_driver:
@@ -353,3 +406,4 @@ def delete_load(load_id: str):
     if len(_LOADS) == before:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {"ok": True}
+
