@@ -43,7 +43,7 @@ USERS: Dict[str, Dict[str, Any]] = {
 # -------------------------------------------------------------------
 # App + CORS
 # -------------------------------------------------------------------
-app = FastAPI(title="TB&S TMS API", version="0.5")
+app = FastAPI(title="TB&S TMS API", version="0.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,10 +101,25 @@ def guard(*roles: str):
 # Pydantic models
 # -------------------------------------------------------------------
 class DriverIn(BaseModel):
+    # Core driver/dispatch fields
     name: str
     licenseNo: Optional[str] = None
     phone: Optional[str] = None
     payRate: Optional[float] = 0.0
+
+    # Phase-1 style dispatch fields captured on Drivers page
+    broker: Optional[str] = None
+    mcNumber: Optional[str] = None
+    demographic: Optional[str] = None
+    truck: Optional[str] = None
+    pickupDate: Optional[str] = None       # keep simple for now, e.g. "10/27/2025"
+    pickupTime: Optional[str] = None       # "HH:MM"
+    pickupAddress: Optional[str] = None
+    deliveryDate: Optional[str] = None
+    deliveryTime: Optional[str] = None
+    deliveryAddress: Optional[str] = None
+    deadheadMiles: Optional[float] = 0.0
+    loadedMiles: Optional[float] = 0.0
 
 
 class DriverOut(DriverIn):
@@ -118,6 +133,19 @@ class LoadIn(BaseModel):
     truck: Optional[str] = None
     rate: Optional[float] = 0.0
 
+    # Mirror the dispatch fields so they can live on the Load as well
+    broker: Optional[str] = None
+    mcNumber: Optional[str] = None
+    demographic: Optional[str] = None
+    pickupDate: Optional[str] = None
+    pickupTime: Optional[str] = None
+    pickupAddress: Optional[str] = None
+    deliveryDate: Optional[str] = None
+    deliveryTime: Optional[str] = None
+    deliveryAddress: Optional[str] = None
+    deadheadMiles: Optional[float] = 0.0
+    loadedMiles: Optional[float] = 0.0
+
 
 class LoadOut(LoadIn):
     id: str
@@ -128,8 +156,44 @@ class LoadOut(LoadIn):
 # In-memory data (for prototype)
 # -------------------------------------------------------------------
 _DRIVERS: List[Dict[str, Any]] = [
-    {"id": "d1", "name": "Ava Johnson", "licenseNo": "GA-1234", "phone": "404-555-0101", "payRate": 0.62},
-    {"id": "d2", "name": "Marcus Lee", "licenseNo": "GA-5678", "phone": "470-555-0147", "payRate": 0.65},
+    {
+        "id": "d1",
+        "name": "Ava Johnson",
+        "licenseNo": "GA-1234",
+        "phone": "404-555-0101",
+        "payRate": 0.62,
+        "broker": None,
+        "mcNumber": None,
+        "demographic": None,
+        "truck": "Truck 12",
+        "pickupDate": None,
+        "pickupTime": None,
+        "pickupAddress": None,
+        "deliveryDate": None,
+        "deliveryTime": None,
+        "deliveryAddress": None,
+        "deadheadMiles": 0.0,
+        "loadedMiles": 0.0,
+    },
+    {
+        "id": "d2",
+        "name": "Marcus Lee",
+        "licenseNo": "GA-5678",
+        "phone": "470-555-0147",
+        "payRate": 0.65,
+        "broker": None,
+        "mcNumber": None,
+        "demographic": None,
+        "truck": "Truck 08",
+        "pickupDate": None,
+        "pickupTime": None,
+        "pickupAddress": None,
+        "deliveryDate": None,
+        "deliveryTime": None,
+        "deliveryAddress": None,
+        "deadheadMiles": 0.0,
+        "loadedMiles": 0.0,
+    },
 ]
 
 _LOADS: List[Dict[str, Any]] = [
@@ -141,6 +205,17 @@ _LOADS: List[Dict[str, Any]] = [
         "truck": "Truck 12",
         "rate": 1250.0,
         "driverOrphaned": False,
+        "broker": None,
+        "mcNumber": None,
+        "demographic": None,
+        "pickupDate": None,
+        "pickupTime": None,
+        "pickupAddress": None,
+        "deliveryDate": None,
+        "deliveryTime": None,
+        "deliveryAddress": None,
+        "deadheadMiles": 0.0,
+        "loadedMiles": 0.0,
     },
     {
         "id": "l2",
@@ -150,6 +225,17 @@ _LOADS: List[Dict[str, Any]] = [
         "truck": "Truck 08",
         "rate": 980.0,
         "driverOrphaned": False,
+        "broker": None,
+        "mcNumber": None,
+        "demographic": None,
+        "pickupDate": None,
+        "pickupTime": None,
+        "pickupAddress": None,
+        "deliveryDate": None,
+        "deliveryTime": None,
+        "deliveryAddress": None,
+        "deadheadMiles": 0.0,
+        "loadedMiles": 0.0,
     },
 ]
 
@@ -216,7 +302,7 @@ def create_driver(d: DriverIn):
 
     - Validate and create a new driver record.
     - ALSO create a corresponding Load record so it immediately appears
-      on the Loads page with a unique Order # and the same driver info.
+      on the Loads page with a unique Order # and the same dispatch info.
     """
     global _LOADS
 
@@ -237,16 +323,27 @@ def create_driver(d: DriverIn):
 
     # Create corresponding load so it shows on Loads page
     order_no = _next_order_no()
-    load = {
+    ld = {
         "id": f"l{len(_LOADS) + 1}",
         "orderNo": order_no,
         "status": "scheduled",
         "driver": d.name,
-        "truck": "",
+        "truck": d.truck or "",
         "rate": d.payRate or 0.0,
         "driverOrphaned": False,
+        "broker": d.broker,
+        "mcNumber": d.mcNumber,
+        "demographic": d.demographic,
+        "pickupDate": d.pickupDate,
+        "pickupTime": d.pickupTime,
+        "pickupAddress": d.pickupAddress,
+        "deliveryDate": d.deliveryDate,
+        "deliveryTime": d.deliveryTime,
+        "deliveryAddress": d.deliveryAddress,
+        "deadheadMiles": d.deadheadMiles or 0.0,
+        "loadedMiles": d.loadedMiles or 0.0,
     }
-    _LOADS.append(load)
+    _LOADS.append(ld)
 
     return new
 
@@ -261,7 +358,7 @@ def update_driver(driver_id: str, d: DriverIn):
     BR-DRV-004 / BR-DRV-006 / BR-DRV-007 / BR-DRV-008
 
     - Update driver record.
-    - Propagate driver name and pay rate changes to all related loads,
+    - Propagate driver & dispatch changes to all related loads,
       so Loads immediately reflects Dispatch edits.
     - Highlight affected loads (driverOrphaned = True) so they are visible.
     """
@@ -288,8 +385,19 @@ def update_driver(driver_id: str, d: DriverIn):
             for load in _LOADS:
                 if load.get("driver") == old_name:
                     load["driver"] = d.name
-                    # Use pay rate as the load rate for now
+                    load["truck"] = d.truck or load.get("truck", "")
                     load["rate"] = d.payRate or 0.0
+                    load["broker"] = d.broker
+                    load["mcNumber"] = d.mcNumber
+                    load["demographic"] = d.demographic
+                    load["pickupDate"] = d.pickupDate
+                    load["pickupTime"] = d.pickupTime
+                    load["pickupAddress"] = d.pickupAddress
+                    load["deliveryDate"] = d.deliveryDate
+                    load["deliveryTime"] = d.deliveryTime
+                    load["deliveryAddress"] = d.deliveryAddress
+                    load["deadheadMiles"] = d.deadheadMiles or 0.0
+                    load["loadedMiles"] = d.loadedMiles or 0.0
                     # Highlight impacted loads
                     load["driverOrphaned"] = True
 
@@ -406,4 +514,3 @@ def delete_load(load_id: str):
     if len(_LOADS) == before:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {"ok": True}
-
