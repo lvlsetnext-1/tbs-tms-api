@@ -249,7 +249,7 @@ def update_load(load_id: str, l: LoadIn):
 
 @app.delete(
     "/v1/loads/{load_id}",
-    dependencies=[guard("admin")],
+    dependencies=[guard("admin", "dispatcher")],
 )
 def delete_load(load_id: str):
     global _LOADS
