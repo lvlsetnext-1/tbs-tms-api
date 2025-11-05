@@ -24,7 +24,6 @@ ALLOWED_ORIGINS = [
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-# Demo in-memory users (all password = test123)
 USERS: Dict[str, Dict[str, Any]] = {
     "admin@tbs.local": {
         "hash": pwd_context.hash("test123"),
@@ -43,7 +42,7 @@ USERS: Dict[str, Dict[str, Any]] = {
 # -------------------------------------------------------------------
 # App + CORS
 # -------------------------------------------------------------------
-app = FastAPI(title="TB&S TMS API", version="0.6")
+app = FastAPI(title="TB&S TMS API", version="0.7")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,458 +58,468 @@ app.add_middleware(
 # JWT helpers & guard
 # -------------------------------------------------------------------
 def create_access_token(email: str, role: str) -> str:
-    now = int(time.time())
-    payload = {
-        "sub": email,
-        "role": role,
-        "iat": now,
-        "exp": now + 60 * 60 * 8,  # 8 hours
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+  now = int(time.time())
+  payload = {
+      "sub": email,
+      "role": role,
+      "iat": now,
+      "exp": now + 60 * 60 * 8,
+  }
+  return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
 def verify_token(token: str) -> Dict[str, Any]:
-    try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+  try:
+      return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+  except jwt.PyJWTError:
+      raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
 
 def guard(*roles: str):
-    """
-    Usage: dependencies=[guard("admin","dispatcher")]
-    If roles is empty, only checks that token is valid.
-    """
-    async def _dep(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
-        if not authorization or not authorization.lower().startswith("bearer "):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
-
-        token = authorization.split(" ", 1)[1].strip()
-        claims = verify_token(token)
-
-        if roles:
-            user_role = claims.get("role")
-            if user_role not in roles:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-
-        return claims
-
-    return Depends(_dep)
+  async def _dep(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+      if not authorization or not authorization.lower().startswith("bearer "):
+          raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+      token = authorization.split(" ", 1)[1].strip()
+      claims = verify_token(token)
+      if roles:
+          user_role = claims.get("role")
+          if user_role not in roles:
+              raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+      return claims
+  return Depends(_dep)
 
 # -------------------------------------------------------------------
 # Pydantic models
 # -------------------------------------------------------------------
 class DriverIn(BaseModel):
-    # Core driver/dispatch fields
-    name: str
-    licenseNo: Optional[str] = None
-    phone: Optional[str] = None
-    payRate: Optional[float] = 0.0
+  name: str
+  licenseNo: Optional[str] = None
+  phone: Optional[str] = None
+  payRate: Optional[float] = 0.0
 
-    # Phase-1 style dispatch fields captured on Drivers page
-    broker: Optional[str] = None
-    mcNumber: Optional[str] = None
-    demographic: Optional[str] = None
-    truck: Optional[str] = None
-    pickupDate: Optional[str] = None       # keep simple for now, e.g. "10/27/2025"
-    pickupTime: Optional[str] = None       # "HH:MM"
-    pickupAddress: Optional[str] = None
-    deliveryDate: Optional[str] = None
-    deliveryTime: Optional[str] = None
-    deliveryAddress: Optional[str] = None
-    deadheadMiles: Optional[float] = 0.0
-    loadedMiles: Optional[float] = 0.0
+  broker: Optional[str] = None
+  mcNumber: Optional[str] = None
+  demographic: Optional[str] = None
+  truck: Optional[str] = None
+  pickupDate: Optional[str] = None
+  pickupTime: Optional[str] = None
+  pickupAddress: Optional[str] = None
+  deliveryDate: Optional[str] = None
+  deliveryTime: Optional[str] = None
+  deliveryAddress: Optional[str] = None
+  deadheadMiles: Optional[float] = 0.0
+  loadedMiles: Optional[float] = 0.0
 
 
 class DriverOut(DriverIn):
-    id: str
+  id: str
 
 
 class LoadIn(BaseModel):
-    orderNo: Optional[str] = None  # may be auto-assigned
-    status: str = "scheduled"      # scheduled | in_transit | delivered | etc
-    driver: Optional[str] = None   # stores the driver name
-    truck: Optional[str] = None
-    rate: Optional[float] = 0.0
+  orderNo: Optional[str] = None
+  status: str = "scheduled"
+  driver: Optional[str] = None
+  truck: Optional[str] = None
+  rate: Optional[float] = 0.0
 
-    # Mirror the dispatch fields so they can live on the Load as well
-    broker: Optional[str] = None
-    mcNumber: Optional[str] = None
-    demographic: Optional[str] = None
-    pickupDate: Optional[str] = None
-    pickupTime: Optional[str] = None
-    pickupAddress: Optional[str] = None
-    deliveryDate: Optional[str] = None
-    deliveryTime: Optional[str] = None
-    deliveryAddress: Optional[str] = None
-    deadheadMiles: Optional[float] = 0.0
-    loadedMiles: Optional[float] = 0.0
+  broker: Optional[str] = None
+  mcNumber: Optional[str] = None
+  demographic: Optional[str] = None
+  pickupDate: Optional[str] = None
+  pickupTime: Optional[str] = None
+  pickupAddress: Optional[str] = None
+  deliveryDate: Optional[str] = None
+  deliveryTime: Optional[str] = None
+  deliveryAddress: Optional[str] = None
+  deadheadMiles: Optional[float] = 0.0
+  loadedMiles: Optional[float] = 0.0
+
+  # Financials
+  paidMiles: Optional[float] = 0.0
+  pricePerGallon: Optional[float] = 0.0
+  milesPerGallon: Optional[float] = 0.0
+  driverPay: Optional[float] = 0.0
+  dispatcherPay: Optional[float] = 0.0
+  detention: Optional[float] = 0.0
+  ow: Optional[float] = 0.0
+  brokerRate: Optional[float] = 0.0
+  bolRcvd: Optional[str] = None  # Yes / No / Bobtail only
+  invoiceDate: Optional[str] = None
+  estimatedPayoutDate: Optional[str] = None
+  invoiceNo: Optional[str] = None
+
+  estimatedFuelCost: Optional[float] = 0.0
+  runTotalCost: Optional[float] = 0.0
+  companyEarnings: Optional[float] = 0.0
 
 
 class LoadOut(LoadIn):
-    id: str
-    # BR-DRV-008 / BR-DRV-009: highlight loads whose driver was edited/deleted
-    driverOrphaned: bool = False
+  id: str
+  driverOrphaned: bool = False
 
 # -------------------------------------------------------------------
-# In-memory data (for prototype)
+# In-memory data
 # -------------------------------------------------------------------
 _DRIVERS: List[Dict[str, Any]] = [
-    {
-        "id": "d1",
-        "name": "Ava Johnson",
-        "licenseNo": "GA-1234",
-        "phone": "404-555-0101",
-        "payRate": 0.62,
-        "broker": None,
-        "mcNumber": None,
-        "demographic": None,
-        "truck": "Truck 12",
-        "pickupDate": None,
-        "pickupTime": None,
-        "pickupAddress": None,
-        "deliveryDate": None,
-        "deliveryTime": None,
-        "deliveryAddress": None,
-        "deadheadMiles": 0.0,
-        "loadedMiles": 0.0,
-    },
-    {
-        "id": "d2",
-        "name": "Marcus Lee",
-        "licenseNo": "GA-5678",
-        "phone": "470-555-0147",
-        "payRate": 0.65,
-        "broker": None,
-        "mcNumber": None,
-        "demographic": None,
-        "truck": "Truck 08",
-        "pickupDate": None,
-        "pickupTime": None,
-        "pickupAddress": None,
-        "deliveryDate": None,
-        "deliveryTime": None,
-        "deliveryAddress": None,
-        "deadheadMiles": 0.0,
-        "loadedMiles": 0.0,
-    },
+  {
+      "id": "d1",
+      "name": "Ava Johnson",
+      "licenseNo": "GA-1234",
+      "phone": "404-555-0101",
+      "payRate": 0.62,
+      "broker": None,
+      "mcNumber": None,
+      "demographic": None,
+      "truck": "Truck 12",
+      "pickupDate": None,
+      "pickupTime": None,
+      "pickupAddress": None,
+      "deliveryDate": None,
+      "deliveryTime": None,
+      "deliveryAddress": None,
+      "deadheadMiles": 0.0,
+      "loadedMiles": 0.0,
+  },
+  {
+      "id": "d2",
+      "name": "Marcus Lee",
+      "licenseNo": "GA-5678",
+      "phone": "470-555-0147",
+      "payRate": 0.65,
+      "broker": None,
+      "mcNumber": None,
+      "demographic": None,
+      "truck": "Truck 08",
+      "pickupDate": None,
+      "pickupTime": None,
+      "pickupAddress": None,
+      "deliveryDate": None,
+      "deliveryTime": None,
+      "deliveryAddress": None,
+      "deadheadMiles": 0.0,
+      "loadedMiles": 0.0,
+  },
 ]
 
 _LOADS: List[Dict[str, Any]] = [
-    {
-        "id": "l1",
-        "orderNo": "ORD-1001",
-        "status": "scheduled",
-        "driver": "Ava Johnson",
-        "truck": "Truck 12",
-        "rate": 1250.0,
-        "driverOrphaned": False,
-        "broker": None,
-        "mcNumber": None,
-        "demographic": None,
-        "pickupDate": None,
-        "pickupTime": None,
-        "pickupAddress": None,
-        "deliveryDate": None,
-        "deliveryTime": None,
-        "deliveryAddress": None,
-        "deadheadMiles": 0.0,
-        "loadedMiles": 0.0,
-    },
-    {
-        "id": "l2",
-        "orderNo": "ORD-1002",
-        "status": "in_transit",
-        "driver": "Marcus Lee",
-        "truck": "Truck 08",
-        "rate": 980.0,
-        "driverOrphaned": False,
-        "broker": None,
-        "mcNumber": None,
-        "demographic": None,
-        "pickupDate": None,
-        "pickupTime": None,
-        "pickupAddress": None,
-        "deliveryDate": None,
-        "deliveryTime": None,
-        "deliveryAddress": None,
-        "deadheadMiles": 0.0,
-        "loadedMiles": 0.0,
-    },
+  {
+      "id": "l1",
+      "orderNo": "ORD-1001",
+      "status": "scheduled",
+      "driver": "Ava Johnson",
+      "truck": "Truck 12",
+      "rate": 1250.0,
+      "driverOrphaned": False,
+      "broker": None,
+      "mcNumber": None,
+      "demographic": None,
+      "pickupDate": None,
+      "pickupTime": None,
+      "pickupAddress": None,
+      "deliveryDate": None,
+      "deliveryTime": None,
+      "deliveryAddress": None,
+      "deadheadMiles": 0.0,
+      "loadedMiles": 0.0,
+      "paidMiles": 0.0,
+      "pricePerGallon": 0.0,
+      "milesPerGallon": 0.0,
+      "driverPay": 0.0,
+      "dispatcherPay": 0.0,
+      "detention": 0.0,
+      "ow": 0.0,
+      "brokerRate": 0.0,
+      "bolRcvd": None,
+      "invoiceDate": None,
+      "estimatedPayoutDate": None,
+      "invoiceNo": None,
+      "estimatedFuelCost": 0.0,
+      "runTotalCost": 0.0,
+      "companyEarnings": 0.0,
+  },
+  {
+      "id": "l2",
+      "orderNo": "ORD-1002",
+      "status": "in_transit",
+      "driver": "Marcus Lee",
+      "truck": "Truck 08",
+      "rate": 980.0,
+      "driverOrphaned": False,
+      "broker": None,
+      "mcNumber": None,
+      "demographic": None,
+      "pickupDate": None,
+      "pickupTime": None,
+      "pickupAddress": None,
+      "deliveryDate": None,
+      "deliveryTime": None,
+      "deliveryAddress": None,
+      "deadheadMiles": 0.0,
+      "loadedMiles": 0.0,
+      "paidMiles": 0.0,
+      "pricePerGallon": 0.0,
+      "milesPerGallon": 0.0,
+      "driverPay": 0.0,
+      "dispatcherPay": 0.0,
+      "detention": 0.0,
+      "ow": 0.0,
+      "brokerRate": 0.0,
+      "bolRcvd": None,
+      "invoiceDate": None,
+      "estimatedPayoutDate": None,
+      "invoiceNo": None,
+      "estimatedFuelCost": 0.0,
+      "runTotalCost": 0.0,
+      "companyEarnings": 0.0,
+  },
 ]
 
 # -------------------------------------------------------------------
-# Helper: generate next Order #
+# Helpers
 # -------------------------------------------------------------------
 def _next_order_no() -> str:
-    """
-    Generate a simple sequential order number like ORD-1003
-    based on existing _LOADS entries.
-    """
-    max_n = 1000
-    for l in _LOADS:
-        o = l.get("orderNo")
-        if isinstance(o, str) and o.startswith("ORD-"):
-            try:
-                n = int(o.split("-")[1])
-                if n > max_n:
-                    max_n = n
-            except ValueError:
-                continue
-    return f"ORD-{max_n + 1}"
+  max_n = 1000
+  for l in _LOADS:
+      o = l.get("orderNo")
+      if isinstance(o, str) and o.startswith("ORD-"):
+          try:
+              n = int(o.split("-")[1])
+              if n > max_n:
+                  max_n = n
+          except ValueError:
+              continue
+  return f"ORD-{max_n + 1}"
+
+
+def _compute_financials(d: Dict[str, Any]) -> None:
+  """
+  Derive Estimated Fuel Cost, Run Total Cost, and Company Earnings.
+
+  Estimated Fuel Cost = (Paid Miles / Miles Per Gallon) * Price Per Gallon
+  Run Total Cost     = Driver Pay + Dispatcher Pay + Detention + OW + Estimated Fuel Cost
+  Company Earnings   = Broker Rate - Run Total Cost
+  """
+  def f(name: str) -> float:
+      try:
+          return float(d.get(name) or 0.0)
+      except (TypeError, ValueError):
+          return 0.0
+
+  paid_miles = max(0.0, f("paidMiles"))
+  price_pg   = max(0.0, f("pricePerGallon"))
+  mpg        = max(0.0, f("milesPerGallon"))
+  driver_pay = f("driverPay")
+  dispatch_pay = f("dispatcherPay")
+  detention = f("detention")
+  ow = f("ow")
+  broker_rate = f("brokerRate")
+
+  est_fuel = 0.0
+  if paid_miles > 0 and mpg > 0 and price_pg > 0:
+      est_fuel = (paid_miles / mpg) * price_pg
+
+  run_total = driver_pay + dispatch_pay + detention + ow + est_fuel
+  company_earnings = broker_rate - run_total
+
+  d["estimatedFuelCost"] = round(est_fuel, 2)
+  d["runTotalCost"] = round(run_total, 2)
+  d["companyEarnings"] = round(company_earnings, 2)
 
 # -------------------------------------------------------------------
 # Health
 # -------------------------------------------------------------------
 @app.get("/v1/health")
 def health():
-    return {"ok": True, "service": "tbs-api"}
+  return {"ok": True, "service": "tbs-api"}
 
 # -------------------------------------------------------------------
 # Auth
 # -------------------------------------------------------------------
 @app.post("/v1/auth/login")
 async def login(form: OAuth2PasswordRequestForm = Depends()):
-    email = form.username
-    user = USERS.get(email)
-    if not user or not pwd_context.verify(form.password, user["hash"]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-    token = create_access_token(email, user["role"])
-    return {"accessToken": token, "role": user["role"]}
+  email = form.username
+  user = USERS.get(email)
+  if not user or not pwd_context.verify(form.password, user["hash"]):
+      raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+  token = create_access_token(email, user["role"])
+  return {"accessToken": token, "role": user["role"]}
 
 # -------------------------------------------------------------------
-# Drivers (dispatcher-facing entry surface)
+# Drivers
 # -------------------------------------------------------------------
-@app.get(
-    "/v1/drivers",
-    response_model=List[DriverOut],
-    dependencies=[guard("admin", "dispatcher", "viewer")],
-)
+@app.get("/v1/drivers", response_model=List[DriverOut], dependencies=[guard("admin","dispatcher","viewer")])
 def list_drivers():
-    return _DRIVERS
+  return _DRIVERS
 
 
-@app.post(
-    "/v1/drivers",
-    response_model=DriverOut,
-    dependencies=[guard("admin", "dispatcher")],
-)
+@app.post("/v1/drivers", response_model=DriverOut, dependencies=[guard("admin","dispatcher")])
 def create_driver(d: DriverIn):
-    """
-    BR-DRV-002 / BR-DRV-006 / BR-DRV-007:
+  global _LOADS
 
-    - Validate and create a new driver record.
-    - ALSO create a corresponding Load record so it immediately appears
-      on the Loads page with a unique Order # and the same dispatch info.
-    """
-    global _LOADS
+  if not d.name or len(d.name.strip()) < 2:
+      raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
+  if not d.licenseNo:
+      raise HTTPException(status_code=400, detail="License # is required")
+  if not d.phone:
+      raise HTTPException(status_code=400, detail="Phone is required")
+  if d.payRate is None or d.payRate <= 0:
+      raise HTTPException(status_code=400, detail="Pay rate must be > 0")
 
-    # Basic validation
-    if not d.name or len(d.name.strip()) < 2:
-        raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
-    if not d.licenseNo:
-        raise HTTPException(status_code=400, detail="License # is required")
-    if not d.phone:
-        raise HTTPException(status_code=400, detail="Phone is required")
-    if d.payRate is None or d.payRate <= 0:
-        raise HTTPException(status_code=400, detail="Pay rate must be > 0")
+  new = d.dict()
+  new["id"] = f"d{len(_DRIVERS) + 1}"
+  _DRIVERS.append(new)
 
-    # Create driver record
-    new = d.dict()
-    new["id"] = f"d{len(_DRIVERS) + 1}"
-    _DRIVERS.append(new)
+  order_no = _next_order_no()
+  ld: Dict[str, Any] = {
+      "id": f"l{len(_LOADS) + 1}",
+      "orderNo": order_no,
+      "status": "scheduled",
+      "driver": d.name,
+      "truck": d.truck or "",
+      "rate": d.payRate or 0.0,
+      "driverOrphaned": False,
+      "broker": d.broker,
+      "mcNumber": d.mcNumber,
+      "demographic": d.demographic,
+      "pickupDate": d.pickupDate,
+      "pickupTime": d.pickupTime,
+      "pickupAddress": d.pickupAddress,
+      "deliveryDate": d.deliveryDate,
+      "deliveryTime": d.deliveryTime,
+      "deliveryAddress": d.deliveryAddress,
+      "deadheadMiles": d.deadheadMiles or 0.0,
+      "loadedMiles": d.loadedMiles or 0.0,
+      "paidMiles": 0.0,
+      "pricePerGallon": 0.0,
+      "milesPerGallon": 0.0,
+      "driverPay": 0.0,
+      "dispatcherPay": 0.0,
+      "detention": 0.0,
+      "ow": 0.0,
+      "brokerRate": 0.0,
+      "bolRcvd": None,
+      "invoiceDate": None,
+      "estimatedPayoutDate": None,
+      "invoiceNo": None,
+      "estimatedFuelCost": 0.0,
+      "runTotalCost": 0.0,
+      "companyEarnings": 0.0,
+  }
+  _compute_financials(ld)
+  _LOADS.append(ld)
+  return new
 
-    # Create corresponding load so it shows on Loads page
-    order_no = _next_order_no()
-    ld = {
-        "id": f"l{len(_LOADS) + 1}",
-        "orderNo": order_no,
-        "status": "scheduled",
-        "driver": d.name,
-        "truck": d.truck or "",
-        "rate": d.payRate or 0.0,
-        "driverOrphaned": False,
-        "broker": d.broker,
-        "mcNumber": d.mcNumber,
-        "demographic": d.demographic,
-        "pickupDate": d.pickupDate,
-        "pickupTime": d.pickupTime,
-        "pickupAddress": d.pickupAddress,
-        "deliveryDate": d.deliveryDate,
-        "deliveryTime": d.deliveryTime,
-        "deliveryAddress": d.deliveryAddress,
-        "deadheadMiles": d.deadheadMiles or 0.0,
-        "loadedMiles": d.loadedMiles or 0.0,
-    }
-    _LOADS.append(ld)
 
-    return new
-
-
-@app.put(
-    "/v1/drivers/{driver_id}",
-    response_model=DriverOut,
-    dependencies=[guard("admin", "dispatcher")],
-)
+@app.put("/v1/drivers/{driver_id}", response_model=DriverOut, dependencies=[guard("admin","dispatcher")])
 def update_driver(driver_id: str, d: DriverIn):
-    """
-    BR-DRV-004 / BR-DRV-006 / BR-DRV-007 / BR-DRV-008
+  global _LOADS
 
-    - Update driver record.
-    - Propagate driver & dispatch changes to all related loads,
-      so Loads immediately reflects Dispatch edits.
-    - Highlight affected loads (driverOrphaned = True) so they are visible.
-    """
-    global _LOADS
+  if not d.name or len(d.name.strip()) < 2:
+      raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
+  if not d.licenseNo:
+      raise HTTPException(status_code=400, detail="License # is required")
+  if not d.phone:
+      raise HTTPException(status_code=400, detail="Phone is required")
+  if d.payRate is None or d.payRate <= 0:
+      raise HTTPException(status_code=400, detail="Pay rate must be > 0")
 
-    # Basic validation
-    if not d.name or len(d.name.strip()) < 2:
-        raise HTTPException(status_code=400, detail="Driver name must be at least 2 characters")
-    if not d.licenseNo:
-        raise HTTPException(status_code=400, detail="License # is required")
-    if not d.phone:
-        raise HTTPException(status_code=400, detail="Phone is required")
-    if d.payRate is None or d.payRate <= 0:
-        raise HTTPException(status_code=400, detail="Pay rate must be > 0")
+  for drv in _DRIVERS:
+      if drv["id"] == driver_id:
+          old_name = drv["name"]
+          data = d.dict()
+          drv.update(data)
+          drv["id"] = driver_id
 
-    for drv in _DRIVERS:
-        if drv["id"] == driver_id:
-            old_name = drv["name"]
-            data = d.dict()
-            drv.update(data)
-            drv["id"] = driver_id
+          for load in _LOADS:
+              if load.get("driver") == old_name:
+                  load["driver"] = d.name
+                  load["truck"] = d.truck or load.get("truck", "")
+                  load["rate"] = d.payRate or 0.0
+                  load["broker"] = d.broker
+                  load["mcNumber"] = d.mcNumber
+                  load["demographic"] = d.demographic
+                  load["pickupDate"] = d.pickupDate
+                  load["pickupTime"] = d.pickupTime
+                  load["pickupAddress"] = d.pickupAddress
+                  load["deliveryDate"] = d.deliveryDate
+                  load["deliveryTime"] = d.deliveryTime
+                  load["deliveryAddress"] = d.deliveryAddress
+                  load["deadheadMiles"] = d.deadheadMiles or 0.0
+                  load["loadedMiles"] = d.loadedMiles or 0.0
+                  load["driverOrphaned"] = True
+                  _compute_financials(load)
 
-            # Propagate updates to loads
-            for load in _LOADS:
-                if load.get("driver") == old_name:
-                    load["driver"] = d.name
-                    load["truck"] = d.truck or load.get("truck", "")
-                    load["rate"] = d.payRate or 0.0
-                    load["broker"] = d.broker
-                    load["mcNumber"] = d.mcNumber
-                    load["demographic"] = d.demographic
-                    load["pickupDate"] = d.pickupDate
-                    load["pickupTime"] = d.pickupTime
-                    load["pickupAddress"] = d.pickupAddress
-                    load["deliveryDate"] = d.deliveryDate
-                    load["deliveryTime"] = d.deliveryTime
-                    load["deliveryAddress"] = d.deliveryAddress
-                    load["deadheadMiles"] = d.deadheadMiles or 0.0
-                    load["loadedMiles"] = d.loadedMiles or 0.0
-                    # Highlight impacted loads
-                    load["driverOrphaned"] = True
+          return drv
 
-            return drv
-
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+  raise HTTPException(status_code=404, detail="Not found")
 
 
-@app.delete(
-    "/v1/drivers/{driver_id}",
-    # Admin + dispatcher allowed to delete
-    dependencies=[guard("admin", "dispatcher")],
-)
+@app.delete("/v1/drivers/{driver_id}", dependencies=[guard("admin","dispatcher")])
 def delete_driver(driver_id: str):
-    """
-    BR-DRV-005 / BR-DRV-009:
+  global _DRIVERS, _LOADS
 
-    - Delete driver record.
-    - Keep loads but mark them as impacted (driverOrphaned = True),
-      so the dispatcher can see which loads are tied to a deleted driver.
-    """
-    global _DRIVERS, _LOADS
+  deleted_name: Optional[str] = None
+  remaining: List[Dict[str, Any]] = []
+  for drv in _DRIVERS:
+      if drv["id"] == driver_id:
+          deleted_name = drv["name"]
+      else:
+          remaining.append(drv)
 
-    deleted_name: Optional[str] = None
-    remaining: List[Dict[str, Any]] = []
-    for drv in _DRIVERS:
-        if drv["id"] == driver_id:
-            deleted_name = drv["name"]
-        else:
-            remaining.append(drv)
+  if deleted_name is None:
+      raise HTTPException(status_code=404, detail="Not found")
 
-    if deleted_name is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+  _DRIVERS = remaining
 
-    _DRIVERS = remaining
+  for load in _LOADS:
+      if load.get("driver") == deleted_name:
+          load["driverOrphaned"] = True
 
-    # Mark loads with this driver as orphaned
-    for load in _LOADS:
-        if load.get("driver") == deleted_name:
-            load["driverOrphaned"] = True
-
-    return {"ok": True, "deletedDriver": deleted_name}
+  return {"ok": True, "deletedDriver": deleted_name}
 
 # -------------------------------------------------------------------
-# Loads (schedule / downstream view)
+# Loads
 # -------------------------------------------------------------------
-@app.get(
-    "/v1/loads",
-    response_model=List[LoadOut],
-    dependencies=[guard("admin", "dispatcher", "viewer")],
-)
+@app.get("/v1/loads", response_model=List[LoadOut], dependencies=[guard("admin","dispatcher","viewer")])
 def list_loads():
-    return _LOADS
+  return _LOADS
 
 
-@app.post(
-    "/v1/loads",
-    response_model=LoadOut,
-    dependencies=[guard("admin", "dispatcher")],
-)
+@app.post("/v1/loads", response_model=LoadOut, dependencies=[guard("admin","dispatcher")])
 def create_load(l: LoadIn):
-    """
-    Manual creation from Loads page.
-    If orderNo is missing, assign a new unique one.
-    """
-    new = l.dict()
-    if not new.get("orderNo"):
-        new["orderNo"] = _next_order_no()
-    new["id"] = f"l{len(_LOADS) + 1}"
-    new.setdefault("driverOrphaned", False)
-    _LOADS.append(new)
-    return new
+  new = l.dict()
+  if not new.get("orderNo"):
+      new["orderNo"] = _next_order_no()
+  new["id"] = f"l{len(_LOADS) + 1}"
+  new.setdefault("driverOrphaned", False)
+  _compute_financials(new)
+  _LOADS.append(new)
+  return new
 
 
-@app.put(
-    "/v1/loads/{load_id}",
-    response_model=LoadOut,
-    dependencies=[guard("admin", "dispatcher")],
-)
+@app.put("/v1/loads/{load_id}", response_model=LoadOut, dependencies=[guard("admin","dispatcher")])
 def update_load(load_id: str, l: LoadIn):
-    """
-    - Update load.
-    - If driver value changes (reassignment), clear driverOrphaned flag
-      so highlight disappears once the load is resolved.
-    """
-    for load in _LOADS:
-        if load["id"] == load_id:
-            prev_driver = load.get("driver")
-            data = l.dict()
-            load.update(data)
+  for load in _LOADS:
+      if load["id"] == load_id:
+          prev_driver = load.get("driver")
+          data = l.dict()
+          load.update(data)
+          if not load.get("orderNo"):
+              load["orderNo"] = _next_order_no()
+          if load.get("driver") != prev_driver:
+              load["driverOrphaned"] = False
+          _compute_financials(load)
+          load["id"] = load_id
+          return load
 
-            # Assign Order # if not set
-            if not load.get("orderNo"):
-                load["orderNo"] = _next_order_no()
-
-            # Resolve highlight when driver is changed or cleared
-            if load.get("driver") != prev_driver:
-                load["driverOrphaned"] = False
-
-            load["id"] = load_id
-            return load
-
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+  raise HTTPException(status_code=404, detail="Not found")
 
 
-@app.delete(
-    "/v1/loads/{load_id}",
-    dependencies=[guard("admin", "dispatcher")],
-)
+@app.delete("/v1/loads/{load_id}", dependencies=[guard("admin","dispatcher")])
 def delete_load(load_id: str):
-    global _LOADS
-    before = len(_LOADS)
-    _LOADS = [x for x in _LOADS if x["id"] != load_id]
-    if len(_LOADS) == before:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return {"ok": True}
+  global _LOADS
+  before = len(_LOADS)
+  _LOADS = [x for x in _LOADS if x["id"] != load_id]
+  if len(_LOADS) == before:
+      raise HTTPException(status_code=404, detail="Not found")
+  return {"ok": True}
