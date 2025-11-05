@@ -1,137 +1,262 @@
-from typing import List, Optional
-import time, os, jwt
-from fastapi import Depends, FastAPI, Header, HTTPException
+import os
+import time
+from typing import List, Optional, Dict, Any
+
+import jwt
+from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
-# ----------------- Config -----------------
-JWT_SECRET = os.getenv("JWT_SECRET", "CHANGE_ME_SUPER_SECRET")
+# -------------------------------------------------------------------
+# Config
+# -------------------------------------------------------------------
+JWT_SECRET = os.getenv("JWT_SECRET", "transportationmanagementsystem")
 JWT_ALG = "HS256"
 
 ALLOWED_ORIGINS = [
-    "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",  # your S3 Website endpoint
-    # "https://your-custom-domain.com",  # add later if you use a custom domain
+    "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",
+    "https://lvl-set-tms.s3.us-east-2.amazonaws.com",
+    "http://localhost:5173",
+    "http://localhost:3000",
 ]
 
-# ----------------- App & CORS -----------------
-app = FastAPI(title="TB&S TMS API", version="0.1")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+
+# Demo in-memory users (all password = test123)
+USERS: Dict[str, Dict[str, Any]] = {
+    "admin@tbs.local": {
+        "hash": pwd_context.hash("test123"),
+        "role": "admin",
+    },
+    "dispatch@tbs.local": {
+        "hash": pwd_context.hash("test123"),
+        "role": "dispatcher",
+    },
+    "viewer@tbs.local": {
+        "hash": pwd_context.hash("test123"),
+        "role": "viewer",
+    },
+}
+
+# -------------------------------------------------------------------
+# App + CORS
+# -------------------------------------------------------------------
+app = FastAPI(title="TB&S TMS API", version="0.2")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET","POST","PUT","DELETE","OPTIONS"],
-    allow_headers=["Authorization","Content-Type"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
     expose_headers=["Content-Disposition"],
     max_age=86400,
 )
 
-pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-
-# Demo users (password for all = "test123")
-USERS = {
-    "admin@tbs.local":    {"hash": pwd.hash("test123"), "role": "admin"},
-    "dispatch@tbs.local": {"hash": pwd.hash("test123"), "role": "dispatcher"},
-    "viewer@tbs.local":   {"hash": pwd.hash("test123"), "role": "viewer"},
-}
-
-def make_token(email: str, role: str) -> str:
+# -------------------------------------------------------------------
+# JWT helpers
+# -------------------------------------------------------------------
+def create_access_token(email: str, role: str) -> str:
     now = int(time.time())
-    payload = {"sub": email, "role": role, "iat": now, "exp": now + 60*60*8}
+    payload = {
+        "sub": email,
+        "role": role,
+        "iat": now,
+        "exp": now + 60 * 60 * 8,  # 8 hours
+    }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
-def verify_token(token: str):
+
+def verify_token(token: str) -> Dict[str, Any]:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
-def guard(*roles):
-    async def _dep(authorization: Optional[str] = Header(default=None)):
+
+def guard(*roles: str):
+    """
+    Usage: dependencies=[guard("admin","dispatcher")]
+    If roles is empty, only checks that token is valid.
+    """
+    async def _dep(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
         if not authorization or not authorization.lower().startswith("bearer "):
-            raise HTTPException(status_code=401, detail="Missing token")
-        claims = verify_token(authorization.split(" ", 1)[1])
-        if roles and claims.get("role") not in roles:
-            raise HTTPException(status_code=403, detail="Forbidden")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+
+        token = authorization.split(" ", 1)[1].strip()
+        claims = verify_token(token)
+
+        if roles:
+            user_role = claims.get("role")
+            if user_role not in roles:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
         return claims
+
     return Depends(_dep)
 
-# ----------------- Models -----------------
+# -------------------------------------------------------------------
+# Pydantic models
+# -------------------------------------------------------------------
 class DriverIn(BaseModel):
     name: str
     licenseNo: Optional[str] = None
     phone: Optional[str] = None
     payRate: Optional[float] = 0.0
 
+
 class DriverOut(DriverIn):
     id: str
 
-# Seed data so the UI works immediately
-_DRIVERS = [
-    {"id": "d1", "name": "Ava Johnson", "licenseNo": "GA-1234", "phone": "404-555-0101", "payRate": 0.62},
-    {"id": "d2", "name": "Marcus Lee", "licenseNo": "GA-5678", "phone": "470-555-0147", "payRate": 0.65},
-]
+
 class LoadIn(BaseModel):
     orderNo: str
-    status: str = "scheduled"     # scheduled | in_transit | delivered | canceled
-    driver: Optional[str] = None  # driver id or name
+    status: str = "scheduled"     # scheduled | in_transit | delivered | canceled | etc
+    driver: Optional[str] = None
     truck: Optional[str] = None
     rate: Optional[float] = 0.0
+
 
 class LoadOut(LoadIn):
     id: str
 
-_LOADS = [
+# -------------------------------------------------------------------
+# In-memory data (for prototype)
+# -------------------------------------------------------------------
+_DRIVERS: List[Dict[str, Any]] = [
+    {"id": "d1", "name": "Ava Johnson", "licenseNo": "GA-1234", "phone": "404-555-0101", "payRate": 0.62},
+    {"id": "d2", "name": "Marcus Lee", "licenseNo": "GA-5678", "phone": "470-555-0147", "payRate": 0.65},
+]
+
+_LOADS: List[Dict[str, Any]] = [
     {"id": "l1", "orderNo": "ORD-1001", "status": "scheduled", "driver": "Ava Johnson", "truck": "Truck 12", "rate": 1250.0},
     {"id": "l2", "orderNo": "ORD-1002", "status": "in_transit", "driver": "Marcus Lee", "truck": "Truck 08", "rate": 980.0},
 ]
 
-# ----------------- Routes -----------------
+# -------------------------------------------------------------------
+# Health
+# -------------------------------------------------------------------
 @app.get("/v1/health")
-def health(): return {"ok": True, "service": "tbs-api"}
+def health():
+    return {"ok": True, "service": "tbs-api"}
 
+
+# -------------------------------------------------------------------
+# Auth
+# -------------------------------------------------------------------
 @app.post("/v1/auth/login")
-def login(form: OAuth2PasswordRequestForm = Depends()):
+async def login(form: OAuth2PasswordRequestForm = Depends()):
+    # form.username, form.password
     email = form.username
     user = USERS.get(email)
-    if not user or not pwd.verify(form.password, user["hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = make_token(email, user["role"])
+    if not user or not pwd_context.verify(form.password, user["hash"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    token = create_access_token(email, user["role"])
     return {"accessToken": token, "role": user["role"]}
 
-@app.get("/v1/drivers", response_model=List[DriverOut], dependencies=[guard("admin","dispatcher","viewer")])
-def list_drivers(): return _DRIVERS
+# -------------------------------------------------------------------
+# Drivers
+# -------------------------------------------------------------------
+@app.get(
+    "/v1/drivers",
+    response_model=List[DriverOut],
+    dependencies=[guard("admin", "dispatcher", "viewer")],
+)
+def list_drivers():
+    return _DRIVERS
 
-@app.post("/v1/drivers", response_model=DriverOut, dependencies=[guard("admin","dispatcher")])
+
+@app.post(
+    "/v1/drivers",
+    response_model=DriverOut,
+    dependencies=[guard("admin", "dispatcher")],
+)
 def create_driver(d: DriverIn):
-    new = d.dict(); new["id"] = f"d{len(_DRIVERS)+1}"; _DRIVERS.append(new); return new
+    new = d.dict()
+    new["id"] = f"d{len(_DRIVERS) + 1}"
+    _DRIVERS.append(new)
+    return new
 
-@app.delete("/v1/drivers/{driver_id}", dependencies=[guard("admin")])
+
+@app.put(
+    "/v1/drivers/{driver_id}",
+    response_model=DriverOut,
+    dependencies=[guard("admin", "dispatcher")],
+)
+def update_driver(driver_id: str, d: DriverIn):
+    for drv in _DRIVERS:
+        if drv["id"] == driver_id:
+            data = d.dict()
+            drv.update(data)
+            drv["id"] = driver_id
+            return drv
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+@app.delete(
+    "/v1/drivers/{driver_id}",
+    dependencies=[guard("admin")],
+)
 def delete_driver(driver_id: str):
     global _DRIVERS
     before = len(_DRIVERS)
     _DRIVERS = [x for x in _DRIVERS if x["id"] != driver_id]
-    if len(_DRIVERS) == before: raise HTTPException(status_code=404, detail="Not found")
+    if len(_DRIVERS) == before:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {"ok": True}
-@app.get("/v1/loads", response_model=List[LoadOut], dependencies=[guard("admin","dispatcher","viewer")])
+
+# -------------------------------------------------------------------
+# Loads
+# -------------------------------------------------------------------
+@app.get(
+    "/v1/loads",
+    response_model=List[LoadOut],
+    dependencies=[guard("admin", "dispatcher", "viewer")],
+)
 def list_loads():
     return _LOADS
 
-@app.post("/v1/loads", response_model=LoadOut, dependencies=[guard("admin","dispatcher")])
+
+@app.post(
+    "/v1/loads",
+    response_model=LoadOut,
+    dependencies=[guard("admin", "dispatcher")],
+)
 def create_load(l: LoadIn):
     new = l.dict()
-    new["id"] = f"l{len(_LOADS)+1}"
+    new["id"] = f"l{len(_LOADS) + 1}"
     _LOADS.append(new)
     return new
 
-@app.delete("/v1/loads/{load_id}", dependencies=[guard("admin")])
+
+@app.put(
+    "/v1/loads/{load_id}",
+    response_model=LoadOut,
+    dependencies=[guard("admin", "dispatcher")],
+)
+def update_load(load_id: str, l: LoadIn):
+    for load in _LOADS:
+        if load["id"] == load_id:
+            data = l.dict()
+            load.update(data)
+            load["id"] = load_id
+            return load
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+@app.delete(
+    "/v1/loads/{load_id}",
+    dependencies=[guard("admin")],
+)
 def delete_load(load_id: str):
     global _LOADS
     before = len(_LOADS)
     _LOADS = [x for x in _LOADS if x["id"] != load_id]
     if len(_LOADS) == before:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return {"ok": True}
+
 
