@@ -16,21 +16,11 @@ JWT_SECRET = "transportationmanagementsystem"  # TODO: move to ENV for real depl
 JWT_ALG = "HS256"
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 8  # 8 hours
 
-# DEMO users — plain-text passwords for prototype only
-# Keep these for testing *and* demo
-_USERS = {
-    "admin@tbs.local": {
-        "password": "test123",
-        "role": "admin",
-    },
-    "dispatcher@tbs.local": {
-        "password": "test123",
-        "role": "dispatcher",
-    },
-    "viewer@tbs.local": {
-        "password": "test123",
-        "role": "viewer",
-    },
+# DEMO users — define special roles for specific emails
+_DEMO_ROLES = {
+    "admin@tbs.local": "admin",
+    "dispatcher@tbs.local": "dispatcher",
+    "viewer@tbs.local": "viewer",
 }
 
 # === FastAPI app ===
@@ -235,16 +225,17 @@ seed_demo()
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
     """
-    Very simple prototype auth: compare plain passwords
-    against the _USERS dict above.
+    Very forgiving prototype auth:
+    - If password != 'test123' => reject.
+    - If email matches a known demo user => use its role.
+    - Otherwise, allow login as a 'viewer'.
     """
     username = (username or "").lower()
-    user = _USERS.get(username)
-    if not user:
+    if password != "test123":
         return None
-    if password != user["password"]:
-        return None
-    return {"email": username, "role": user["role"]}
+
+    role = _DEMO_ROLES.get(username, "viewer")
+    return {"email": username, "role": role}
 
 
 def create_access_token(email: str, role: str) -> str:
@@ -291,7 +282,8 @@ def require_role(*roles: str):
 
 @app.get("/v1/health")
 def health():
-    return {"status": "ok"}
+    # include mode so we can easily verify we're on this version
+    return {"status": "ok", "authMode": "demo-any-test123"}
 
 
 @app.post("/v1/auth/login", response_model=TokenOut)
@@ -509,7 +501,7 @@ def download_invoice_pdf(
 
     # Create PDF in memory
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
+    c = canvas.Canvas(buf, pagesizes=letter)
     width, height = letter  # (612, 792)
 
     y = height - 50
@@ -601,4 +593,3 @@ def download_invoice_pdf(
             "Content-Disposition": f'attachment; filename=\"{filename}\"'
         },
     )
-
