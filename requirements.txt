@@ -3,6 +3,9 @@ uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 PyJWT==2.9.0
 passlib==1.7.4
+reportlab
+
+
 
 
 
