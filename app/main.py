@@ -9,6 +9,12 @@ from fastapi.security import OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
+import io
+from fastapi.responses import StreamingResponse
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+
+
 # -------------------------------------------------------------------
 # Config
 # -------------------------------------------------------------------
