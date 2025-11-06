@@ -505,7 +505,7 @@ def download_invoice_pdf(
     # Create PDF in memory
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
-    width, height = letter
+    width, height = letter  # (612, 792)
 
     y = height - 50
 
@@ -525,31 +525,34 @@ def download_invoice_pdf(
     # Header – right side meta
     y_meta = height - 50
     c.setFont("Helvetica", 10)
-    c.drawRightString(width - 50, y_meta, f"Invoice #: {invoice_no}")
+    c.drawRightString(width - 40, y_meta, f"Invoice #: {invoice_no}")
     y_meta -= 14
-    c.drawRightString(width - 50, y_meta, f"Date: {invoice_date}")
+    c.drawRightString(width - 40, y_meta, f"Date: {invoice_date}")
     y_meta -= 14
-    c.drawRightString(width - 50, y_meta, f"Order #: {order_no}")
+    c.drawRightString(width - 40, y_meta, f"Order #: {order_no}")
     y_meta -= 14
-    c.drawRightString(width - 50, y_meta, f"Client: {broker}")
+    c.drawRightString(width - 40, y_meta, f"Client: {broker}")
 
     # Table header
     y -= 60
-    c.setFont("Helvetica-Bold", 10)
+    c.setFont("Helvetica-Bold", 8)
+
     headers = [
         "DATE", "CONTAINER/PO #", "COMMODITY", "RATE",
         "STORAGE", "CHASSIS", "DETENTION", "HAZMAT",
         "REEFER", "OW", "PRE-PULL", "Total",
     ]
-    # Simple column positions (tuned for letter width)
-    x_positions = [50, 120, 220, 280, 330, 380, 435, 490, 540, 590, 640, 690]
+
+    # Compressed column positions so everything fits on letter width
+    # Leave ~35–40pt margin on each side
+    x_positions = [40, 95, 150, 205, 250, 295, 340, 385, 430, 475, 520, 565]
 
     for x, text in zip(x_positions, headers):
         c.drawString(x, y, text)
 
     # Table row
-    y -= 18
-    c.setFont("Helvetica", 10)
+    y -= 14
+    c.setFont("Helvetica", 8)
     values = [
         pickup_date,
         order_no,          # Container/PO #
@@ -569,18 +572,24 @@ def download_invoice_pdf(
 
     # Footer
     y -= 40
+    c.setFont("Helvetica", 10)
     c.drawString(50, y, "Routing#: 256074974")
     y -= 14
     c.drawString(50, y, "Acct#: 7116467999")
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(width - 50, y, f"Grand Total: ${total:.2f}")
+    c.drawRightString(width - 40, y, f"Grand Total: ${total:.2f}")
 
     c.showPage()
     c.save()
     buf.seek(0)
 
-    filename = f'invoice-{invoice_no or order_no or load_id}.pdf'
+    # File name: INV-name_of_client-invoice_number
+    client = broker or "Client"
+    safe_client = "".join(ch if ch.isalnum() else "_" for ch in client)
+    number_part = invoice_no or order_no or load_id
+    filename = f"INV-{safe_client}-{number_part}.pdf"
+
     return StreamingResponse(
         buf,
         media_type="application/pdf",
@@ -588,4 +597,3 @@ def download_invoice_pdf(
             "Content-Disposition": f'attachment; filename=\"{filename}\"'
         },
     )
-
