@@ -529,3 +529,117 @@ def delete_load(load_id: str):
   if len(_LOADS) == before:
       raise HTTPException(status_code=404, detail="Not found")
   return {"ok": True}
+
+@app.get("/v1/loads/{load_id}/invoice/pdf")
+def download_invoice_pdf(
+    load_id: str,
+    user = Depends(require_role("viewer")),  # any authenticated role can download
+):
+    # Find the load
+    load = next((l for l in loads_db if str(l["id"]) == str(load_id)), None)
+    if not load:
+        raise HTTPException(status_code=404, detail="Load not found")
+
+    # Pull invoice fields
+    order_no = load.get("orderNo") or ""
+    pickup_date = load.get("pickupDate") or ""
+    broker = load.get("broker") or ""
+    invoice_no = load.get("invoiceNo") or ""
+    invoice_date = load.get("invoiceDate") or pickup_date or ""
+    rate = float(load.get("brokerRate") or load.get("rate") or 0)
+    detention = float(load.get("detention") or 0)
+    ow = float(load.get("ow") or 0)
+    storage = 0.0
+    chassis = 0.0
+    hazmat = 0.0
+    reefer = 0.0
+    pre_pull = 0.0
+
+    total = rate + storage + chassis + detention + hazmat + reefer + ow + pre_pull
+
+    # Create PDF in memory
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    width, height = letter
+
+    y = height - 50
+
+    # Header – left side
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "TB&S TRANSPORTATION LLC")
+    c.setFont("Helvetica", 10)
+    y -= 14
+    c.drawString(50, y, "Savannah, GA 31406")
+    y -= 14
+    c.drawString(50, y, "678.551.5955")
+    y -= 14
+    c.drawString(50, y, "finance@tbandstransportation.com")
+    y -= 20
+    c.drawString(50, y, "SPECIAL INSTRUCTION: PLEASE APPLY QUICKPAY")
+
+    # Header – right side meta
+    y_meta = height - 50
+    c.setFont("Helvetica", 10)
+    c.drawRightString(width - 50, y_meta, f"Invoice #: {invoice_no}")
+    y_meta -= 14
+    c.drawRightString(width - 50, y_meta, f"Date: {invoice_date}")
+    y_meta -= 14
+    c.drawRightString(width - 50, y_meta, f"Order #: {order_no}")
+    y_meta -= 14
+    c.drawRightString(width - 50, y_meta, f"Client: {broker}")
+
+    # Table header
+    y -= 60
+    c.setFont("Helvetica-Bold", 10)
+    headers = [
+        "DATE", "CONTAINER/PO #", "COMMODITY", "RATE",
+        "STORAGE", "CHASSIS", "DETENTION", "HAZMAT",
+        "REEFER", "OW", "PRE-PULL", "Total",
+    ]
+    # Simple column positions (tuned for letter width)
+    x_positions = [50, 120, 220, 280, 330, 380, 435, 490, 540, 590, 640, 690]
+
+    for x, text in zip(x_positions, headers):
+        c.drawString(x, y, text)
+
+    # Table row
+    y -= 18
+    c.setFont("Helvetica", 10)
+    values = [
+        pickup_date,
+        order_no,          # Container/PO #
+        "",                # Commodity intentionally blank
+        f"{rate:.2f}",
+        f"{storage:.2f}",
+        f"{chassis:.2f}",
+        f"{detention:.2f}",
+        f"{hazmat:.2f}",
+        f"{reefer:.2f}",
+        f"{ow:.2f}",
+        f"{pre_pull:.2f}",
+        f"{total:.2f}",
+    ]
+    for x, text in zip(x_positions, values):
+        c.drawString(x, y, text)
+
+    # Footer
+    y -= 40
+    c.drawString(50, y, "Routing#: 256074974")
+    y -= 14
+    c.drawString(50, y, "Acct#: 7116467999")
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(width - 50, y, f"Grand Total: ${total:.2f}")
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+
+    filename = f'invoice-{invoice_no or order_no or load_id}.pdf'
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename=\"{filename}\"'
+        },
+    )
