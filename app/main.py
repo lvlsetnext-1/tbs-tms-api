@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from passlib.context import CryptContext
 from typing import List, Optional, Dict, Any
 import jwt
 import time
@@ -11,45 +10,43 @@ import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
-# --- Security / JWT config ---
+# === Security / JWT config ===
 
-JWT_SECRET = "transportationmanagementsystem"  # move to ENV in real deployment
+JWT_SECRET = "transportationmanagementsystem"  # TODO: move to ENV for real deployment
 JWT_ALG = "HS256"
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 8  # 8 hours
 
-# Use pbkdf2_sha256 to avoid bcrypt quirks
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-
-# Demo users – email -> {hash, role}
+# DEMO users — plain-text passwords for prototype only
+# Keep these for testing *and* demo
 _USERS = {
     "admin@tbs.local": {
-        "hash": pwd_context.hash("test123"),
+        "password": "test123",
         "role": "admin",
     },
     "dispatcher@tbs.local": {
-        "hash": pwd_context.hash("test123"),
+        "password": "test123",
         "role": "dispatcher",
     },
     "viewer@tbs.local": {
-        "hash": pwd_context.hash("test123"),
+        "password": "test123",
         "role": "viewer",
     },
 }
 
-# --- FastAPI app ---
+# === FastAPI app ===
 
 app = FastAPI(title="TB&S TMS API", version="1.0.0")
 
+# CORS: open for prototype so S3 static site can hit the API
 app.add_middleware(
     CORSMiddleware,
-    # Wide open for prototype so S3 + any dev environment can hit it
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Pydantic models ---
+# === Pydantic models ===
 
 class TokenOut(BaseModel):
     accessToken: str
@@ -129,7 +126,7 @@ class LoadOut(LoadIn):
     companyEarnings: float = 0
 
 
-# --- In-memory storage (prototype only) ---
+# === In-memory storage (prototype only) ===
 
 drivers_db: List[Dict[str, Any]] = []
 loads_db: List[Dict[str, Any]] = []
@@ -143,7 +140,10 @@ def next_order_no() -> str:
 
 
 def compute_financials(load: Dict[str, Any]) -> None:
-    """Compute estimatedFuelCost, runTotalCost, companyEarnings."""
+    """
+    Compute estimatedFuelCost, runTotalCost, companyEarnings
+    based on paid miles, fuel, driver/dispatcher pay, detention, OW, broker rate.
+    """
     paid_miles = float(load.get("paidMiles") or 0)
     price_pg = float(load.get("pricePerGallon") or 0)
     mpg = float(load.get("milesPerGallon") or 0)
@@ -166,11 +166,12 @@ def compute_financials(load: Dict[str, Any]) -> None:
     load["companyEarnings"] = round(earnings, 2)
 
 
-# Seed a tiny bit of demo data so UI isn't empty
 def seed_demo():
+    """Seed one driver + one load so UI isn't empty on first load."""
     global drivers_db, loads_db, _order_counter
     if drivers_db or loads_db:
         return
+
     d = {
         "id": "d1",
         "name": "Sample Driver",
@@ -192,6 +193,7 @@ def seed_demo():
     }
     drivers_db.append(d)
     _order_counter = 1
+
     l = {
         "id": "l1",
         "orderNo": "ORD-0001",
@@ -229,14 +231,18 @@ def seed_demo():
 
 seed_demo()
 
-# --- Auth helpers ---
+# === Auth helpers ===
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
+    """
+    Very simple prototype auth: compare plain passwords
+    against the _USERS dict above.
+    """
     username = (username or "").lower()
     user = _USERS.get(username)
     if not user:
         return None
-    if not pwd_context.verify(password, user["hash"]):
+    if password != user["password"]:
         return None
     return {"email": username, "role": user["role"]}
 
@@ -281,7 +287,7 @@ def require_role(*roles: str):
     return dep
 
 
-# --- Routes: Health / Auth ---
+# === Routes: Health / Auth ===
 
 @app.get("/v1/health")
 def health():
@@ -306,7 +312,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
     )
 
 
-# --- Routes: Drivers ---
+# === Routes: Drivers ===
 
 @app.get("/v1/drivers", response_model=List[DriverOut])
 def list_drivers(user = Depends(require_role("viewer", "dispatcher", "admin"))):
@@ -320,7 +326,7 @@ def create_driver(d: DriverIn, user = Depends(require_role("dispatcher", "admin"
     new["id"] = new_id
     drivers_db.append(new)
 
-    # When a driver is created, create an associated Load row
+    # When a driver is created, also create an associated Load row
     load = {
         "id": f"l{len(loads_db)+1}",
         "orderNo": next_order_no(),
@@ -417,7 +423,7 @@ def delete_driver(driver_id: str, user = Depends(require_role("admin"))):
     return {"ok": True}
 
 
-# --- Routes: Loads ---
+# === Routes: Loads ===
 
 @app.get("/v1/loads", response_model=List[LoadOut])
 def list_loads(user = Depends(require_role("viewer", "dispatcher", "admin"))):
@@ -451,7 +457,6 @@ def update_load(load_id: str, l: LoadIn, user = Depends(require_role("dispatcher
         raise HTTPException(status_code=404, detail="Load not found")
 
     data = l.dict()
-    # Preserve existing id and driverOrphaned unless explicitly changed
     keep_id = target["id"]
     keep_orphan = target.get("driverOrphaned", False)
     target.update(data)
@@ -473,7 +478,7 @@ def delete_load(load_id: str, user = Depends(require_role("dispatcher", "admin")
     return {"ok": True}
 
 
-# --- Routes: Invoice PDF ---
+# === Routes: Invoice PDF ===
 
 @app.get("/v1/loads/{load_id}/invoice/pdf")
 def download_invoice_pdf(
@@ -544,7 +549,6 @@ def download_invoice_pdf(
     ]
 
     # Compressed column positions so everything fits on letter width
-    # Leave ~35–40pt margin on each side
     x_positions = [40, 95, 150, 205, 250, 295, 340, 385, 430, 475, 520, 565]
 
     for x, text in zip(x_positions, headers):
@@ -597,3 +601,4 @@ def download_invoice_pdf(
             "Content-Disposition": f'attachment; filename=\"{filename}\"'
         },
     )
+
