@@ -30,10 +30,12 @@ app = FastAPI(title="TB&S TMS API", version="1.0.0")
 # CORS: open for prototype so S3 static site can hit the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,  # ← Change from S3_WEBSITE to ALLOWED_ORIGINS
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET","POST","PUT","DELETE","OPTIONS"],
+    allow_headers=["Authorization","Content-Type"],
+    expose_headers=["Content-Disposition"],
+    max_age=86400,
 )
 
 # === Pydantic models ===
