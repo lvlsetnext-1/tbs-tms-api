@@ -206,6 +206,22 @@ def create_driver(d: DriverIn):
     _DRIVERS.append(new)
     return new
 
+@app.put("/v1/drivers/{driver_id}", response_model=DriverOut,
+         dependencies=[guard("admin","dispatcher")])
+
+def update_driver(driver_id: str, d: DriverIn):
+    # Find the driver
+    for idx, drv in enumerate(_DRIVERS):
+        if drv["id"] == driver_id:
+            # Update fields from the request body
+            updated = drv.copy()
+            updated.update(d.dict())
+            _DRIVERS[idx] = updated
+            return updated
+
+    # If no driver matched that id
+    raise HTTPException(status_code=404, detail="Not found")
+
 @app.delete(
     "/v1/drivers/{driver_id}",
     dependencies=[Depends(guard("admin"))],
