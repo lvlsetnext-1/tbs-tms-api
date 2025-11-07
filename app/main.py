@@ -8,19 +8,20 @@ import jwt
 import time
 
 # --- Config ---
-JWT_SECRET = "transportationmanagementsystem"  # set in Render ENV as well
+JWT_SECRET = "transportationmanagementsystem"  # TODO: move to environment
 JWT_ALG = "HS256"
+
 ALLOWED_ORIGINS = [
     "http://lvl-set-tms.s3-website.us-east-2.amazonaws.com",
     "https://YOUR-CUSTOM-DOMAIN",
 ]
 
 # --- FastAPI app ---
-app = FastAPI(title="TB&S TMS API", version="0.1")
+app = FastAPI(title="TB&S TMS API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,          # ✅ FIXED
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
@@ -30,14 +31,24 @@ app.add_middleware(
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# In-memory users for now
+# In-memory users
 USERS = {
-    "admin@tbs.local":   {"hash": pwd.hash("test123"), "role": "admin"},
-    "dispatch@tbs.local": {"hash": pwd.hash("test123"), "role": "dispatcher"},  # ✅ dispatcher role
-    "viewer@tbs.local":  {"hash": pwd.hash("test123"), "role": "viewer"},
+    "admin@tbs.local": {
+        "hash": pwd.hash("test123"),
+        "role": "admin",
+    },
+    "dispatch@tbs.local": {
+        "hash": pwd.hash("test123"),
+        "role": "dispatcher",
+    },
+    "viewer@tbs.local": {
+        "hash": pwd.hash("test123"),
+        "role": "viewer",
+    },
 }
 
 # --- JWT helpers ---
+
 def make_token(email: str, role: str, ttl_seconds: int = 60 * 60 * 8) -> str:
     now = int(time.time())
     payload = {
@@ -47,6 +58,7 @@ def make_token(email: str, role: str, ttl_seconds: int = 60 * 60 * 8) -> str:
         "exp": now + ttl_seconds,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
 
 def decode_token(token: str) -> dict:
     try:
@@ -62,10 +74,12 @@ def decode_token(token: str) -> dict:
             detail="Invalid token",
         )
 
-# --- Schemas ---
+# --- Pydantic schemas ---
+
 class LoginOut(BaseModel):
     accessToken: str
     role: str
+
 
 class DriverBase(BaseModel):
     name: str
@@ -73,11 +87,14 @@ class DriverBase(BaseModel):
     email: Optional[str] = None
     status: str
 
+
 class DriverIn(DriverBase):
     pass
 
+
 class DriverOut(DriverBase):
     id: str
+
 
 class LoadBase(BaseModel):
     reference: str
@@ -89,24 +106,31 @@ class LoadBase(BaseModel):
     driver_id: Optional[str] = None
     status: str
 
+
 class LoadIn(LoadBase):
     pass
 
+
 class LoadOut(LoadBase):
     id: str
+
 
 class InvoiceBase(BaseModel):
     load_id: str
     amount: float
     status: str
 
+
 class InvoiceIn(InvoiceBase):
     pass
+
 
 class InvoiceOut(InvoiceBase):
     id: str
 
-# --- Auth dependency helpers ---
+
+# --- Auth dependencies ---
+
 def get_current_user(authorization: str = Header(None)) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -124,28 +148,36 @@ def get_current_user(authorization: str = Header(None)) -> dict:
         )
     return {"email": email, "role": role}
 
+
 def guard(*allowed_roles: str):
-    # This returns the actual dependency function
-    def dependency(user = Depends(get_current_user)):
+    def dependency(user=Depends(get_current_user)):
         if user["role"] not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden",
             )
         return user
+
     return dependency
 
+
 # --- Auth endpoint ---
+
 @app.post("/v1/auth/login", response_model=LoginOut)
 def login(form: OAuth2PasswordRequestForm = Depends()):
     email = form.username
     user = USERS.get(email)
     if not user or not pwd.verify(form.password, user["hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
     token = make_token(email, user["role"])
     return {"accessToken": token, "role": user["role"]}
 
-# --- In-memory data stores ---
+
+# --- In-memory data stores (seed data) ---
+
 _DRIVERS = [
     {
         "id": "d1",
@@ -183,17 +215,20 @@ _INVOICES = [
         "load_id": "l1",
         "amount": 1200.0,
         "status": "unpaid",
-    },
+    }
 ]
 
+
 # --- Driver endpoints ---
+
 @app.get(
     "/v1/drivers",
     response_model=List[DriverOut],
-    dependencies=[Depends(guard("admin", "dispatcher", "viewer"))],  # ✅ use Depends(...)
+    dependencies=[Depends(guard("admin", "dispatcher", "viewer"))],
 )
 def list_drivers():
     return _DRIVERS
+
 
 @app.post(
     "/v1/drivers",
@@ -206,21 +241,24 @@ def create_driver(d: DriverIn):
     _DRIVERS.append(new)
     return new
 
-@app.put("/v1/drivers/{driver_id}", response_model=DriverOut,
-         dependencies=[guard("admin","dispatcher")])
 
+@app.put(
+    "/v1/drivers/{driver_id}",
+    response_model=DriverOut,
+    dependencies=[Depends(guard("admin", "dispatcher"))],
+)
 def update_driver(driver_id: str, d: DriverIn):
-    # Find the driver
     for idx, drv in enumerate(_DRIVERS):
         if drv["id"] == driver_id:
-            # Update fields from the request body
             updated = drv.copy()
             updated.update(d.dict())
             _DRIVERS[idx] = updated
             return updated
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Driver not found",
+    )
 
-    # If no driver matched that id
-    raise HTTPException(status_code=404, detail="Not found")
 
 @app.delete(
     "/v1/drivers/{driver_id}",
@@ -231,10 +269,15 @@ def delete_driver(driver_id: str):
     before = len(_DRIVERS)
     _DRIVERS = [x for x in _DRIVERS if x["id"] != driver_id]
     if len(_DRIVERS) == before:
-        raise HTTPException(status_code=404, detail="Driver not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Driver not found",
+        )
     return {"ok": True}
 
+
 # --- Load endpoints ---
+
 @app.get(
     "/v1/loads",
     response_model=List[LoadOut],
@@ -242,6 +285,7 @@ def delete_driver(driver_id: str):
 )
 def list_loads():
     return _LOADS
+
 
 @app.post(
     "/v1/loads",
@@ -254,6 +298,25 @@ def create_load(l: LoadIn):
     _LOADS.append(new)
     return new
 
+
+@app.put(
+    "/v1/loads/{load_id}",
+    response_model=LoadOut,
+    dependencies=[Depends(guard("admin", "dispatcher"))],
+)
+def update_load(load_id: str, l: LoadIn):
+    for idx, load in enumerate(_LOADS):
+        if load["id"] == load_id:
+            updated = load.copy()
+            updated.update(l.dict())
+            _LOADS[idx] = updated
+            return updated
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Load not found",
+    )
+
+
 @app.delete(
     "/v1/loads/{load_id}",
     dependencies=[Depends(guard("admin"))],
@@ -263,10 +326,15 @@ def delete_load(load_id: str):
     before = len(_LOADS)
     _LOADS = [x for x in _LOADS if x["id"] != load_id]
     if len(_LOADS) == before:
-        raise HTTPException(status_code=404, detail="Load not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Load not found",
+        )
     return {"ok": True}
 
+
 # --- Invoice endpoints ---
+
 @app.get(
     "/v1/invoices",
     response_model=List[InvoiceOut],
@@ -274,6 +342,7 @@ def delete_load(load_id: str):
 )
 def list_invoices():
     return _INVOICES
+
 
 @app.post(
     "/v1/invoices",
@@ -286,6 +355,7 @@ def create_invoice(inv: InvoiceIn):
     _INVOICES.append(new)
     return new
 
+
 @app.delete(
     "/v1/invoices/{invoice_id}",
     dependencies=[Depends(guard("admin"))],
@@ -295,5 +365,9 @@ def delete_invoice(invoice_id: str):
     before = len(_INVOICES)
     _INVOICES = [x for x in _INVOICES if x["id"] != invoice_id]
     if len(_INVOICES) == before:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invoice not found",
+        )
     return {"ok": True}
+
