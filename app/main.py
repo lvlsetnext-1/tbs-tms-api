@@ -265,6 +265,142 @@ def _sync_driver_to_loads(driver: Driver) -> None:
             load["loadedMiles"] = driver.get("loadedMiles", 0.0) or 0.0
             load["paidMiles"] = load.get("loadedMiles", 0.0) or 0.0
 
+from fastapi import Depends  # you already have this at the top
+
+# ...
+
+@app.get(
+    "/v1/loads/{load_id}/invoice/pdf",
+    dependencies=[Depends(guard("admin", "dispatcher", "viewer"))],
+)
+def download_invoice_pdf(load_id: str):
+    # 1) Find the load
+    load = next((l for l in _LOADS if l.get("id") == load_id), None)
+    if not load:
+        # This is the "Details Not Found" you are seeing now
+        raise HTTPException(status_code=404, detail="Details Not Found")
+
+    # 2) Validate required invoice fields (same rules as frontend)
+    missing = get_invoice_missing_fields(load)
+    if missing:
+        # Frontend will show this in the toast
+        raise HTTPException(
+            status_code=400,
+            detail="Details Not Found: missing " + ", ".join(missing),
+        )
+
+    # 3) Build a simple 1-page PDF invoice
+    #    (This uses reportlab; add 'reportlab' to requirements.txt.)
+    try:
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.pdfgen import canvas
+    except ImportError:
+        # Fallback: return a plain text file if reportlab isn't installed yet
+        content = "INVOICE\n\n" + "\n".join(
+            [
+                f"Invoice #: {load.get('invoiceNo')}",
+                f"Order #: {load.get('orderNo')}",
+                f"Date: {(load.get('invoiceDate') or load.get('pickupDate') or '')}",
+                f"Client: {load.get('broker')}",
+                f"Amount: ${calc_amount_from_load(load):.2f}",
+            ]
+        )
+        buf = BytesIO(content.encode("utf-8"))
+        filename = f"invoice-{load.get('invoiceNo') or load.get('orderNo') or load_id}.txt"
+        return StreamingResponse(
+            buf,
+            media_type="text/plain",
+            headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+        )
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    width, height = LETTER
+
+    y = height - 72
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(72, y, "INVOICE")
+
+    y -= 30
+    c.setFont("Helvetica", 11)
+    lines = [
+        f"Invoice #: {load.get('invoiceNo')}",
+        f"Order #: {load.get('orderNo')}",
+        f"Date: {(load.get('invoiceDate') or load.get('pickupDate') or '')}",
+        f"Client: {load.get('broker')}",
+        f"Truck: {load.get('truck')}",
+        f"Driver: {load.get('driver')}",
+    ]
+    for line in lines:
+        c.drawString(72, y, line)
+        y -= 16
+
+    y -= 10
+    c.setFont("Helvetica-Bold", 12)
+    amount = calc_amount_from_load(load)
+    c.drawString(72, y, f"Grand Total: ${amount:,.2f}")
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+
+    filename = f"invoice-{load.get('invoiceNo') or load.get('orderNo') or load_id}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+    )
+
+
+from io import BytesIO
+from fastapi.responses import StreamingResponse
+# ^^^ make sure these imports are at the top of main.py
+
+# ...
+
+def calc_amount_from_load(load: dict) -> float:
+    """Match the frontend's calcAmount(load)."""
+    base = load.get("brokerRate")
+    if base is None:
+        base = load.get("rate", 0)
+    detention = load.get("detention", 0) or 0
+    ow = load.get("ow", 0) or 0
+    try:
+        return float(base or 0) + float(detention) + float(ow)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_invoice_missing_fields(load: dict) -> list[str]:
+    """
+    Same rules as invoices.html:getInvoiceMissingFields:
+    - Invoice #, Order #, Date, Client (not 'Client'), Container/PO#, Grand Total > 0
+    """
+    missing: list[str] = []
+
+    inv_no = str(load.get("invoiceNo") or "").strip()
+    ord_no = str(load.get("orderNo") or "").strip()
+    date = (load.get("invoiceDate") or load.get("pickupDate") or "").strip()
+    client = str(load.get("broker") or "").strip()
+    po = ord_no  # using Order # as Container/PO # for now
+    amount = calc_amount_from_load(load)
+
+    if not inv_no:
+        missing.append("Invoice #")
+    if not ord_no:
+        missing.append("Order #")
+    if not date:
+        missing.append("Date")
+    if not client or client.lower() == "client":
+        missing.append("Client")
+    if not po:
+        missing.append("Container/PO #")
+    if not (amount > 0):
+        missing.append("Grand Total")
+
+    return missing
+
+
 # --- Auth route -------------------------------------------------------------
 
 @app.post("/v1/auth/login")
