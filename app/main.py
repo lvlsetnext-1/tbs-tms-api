@@ -96,17 +96,18 @@ def get_current_user(authorization: str = Header(None)) -> Dict[str, Any]:
 
 def guard(*allowed_roles: str):
     """
-    Returns a Depends() object that enforces the given roles.
-    Use as: dependencies=[guard("admin","dispatcher")].
+    Used as: dependencies=[Depends(guard("admin","dispatcher"))]
+    Returns a callable dependency, not a Depends instance.
     """
-    def _dep(user = Depends(get_current_user)):
+    def dependency(user=Depends(get_current_user)):
         if allowed_roles and user["role"] not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Forbidden",
             )
         return user
-    return Depends(_dep)
+
+    return dependency
 
 # --- Schemas (simple dicts for flexibility) ---------------------------------
 
