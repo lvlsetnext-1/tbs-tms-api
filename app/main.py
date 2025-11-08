@@ -466,16 +466,19 @@ def download_invoice_pdf(load_id: str, user = Depends(guard("admin", "dispatcher
 
     missing = get_invoice_missing_fields(load)
     if missing:
+        # Frontend will show this in the toast
         raise HTTPException(
             status_code=400,
             detail="Details Not Found: missing " + ", ".join(missing),
         )
 
-    # Try to use reportlab to build a simple one-page PDF; if unavailable, fall back to text.
+    # Try to use reportlab for a nicely formatted invoice PDF
     try:
         from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib import colors
         from reportlab.pdfgen import canvas
     except ImportError:
+        # Fallback: plain text attachment if reportlab is not available
         content_lines = [
             "INVOICE",
             "",
@@ -494,43 +497,169 @@ def download_invoice_pdf(load_id: str, user = Depends(guard("admin", "dispatcher
             headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
         )
 
+    # ---------- Nicely formatted PDF using reportlab ----------
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=LETTER)
     width, height = LETTER
+    margin = 50
 
-    y = height - 72
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(72, y, "INVOICE")
-
-    y -= 30
-    c.setFont("Helvetica", 11)
-    lines = [
-        f"Invoice #: {load.get('invoiceNo')}",
-        f"Order #: {load.get('orderNo')}",
-        f"Date: {(load.get('invoiceDate') or load.get('pickupDate') or '')}",
-        f"Client: {load.get('broker')}",
-        f"Truck: {load.get('truck')}",
-        f"Driver: {load.get('driver')}",
-    ]
-    for line in lines:
-        c.drawString(72, y, line)
-        y -= 16
-
-    y -= 10
-    c.setFont("Helvetica-Bold", 12)
+    inv_no = load.get("invoiceNo") or ""
+    ord_no = load.get("orderNo") or ""
+    date = (load.get("invoiceDate") or load.get("pickupDate") or "") or ""
+    client = load.get("broker") or ""
+    origin = load.get("origin") or load.get("pickupAddress") or ""
+    dest = load.get("destination") or load.get("deliveryAddress") or ""
+    truck = load.get("truck") or ""
+    driver = load.get("driver") or ""
     amount = calc_amount_from_load(load)
-    c.drawString(72, y, f"Grand Total: ${amount:,.2f}")
+
+    detention = float(load.get("detention") or 0)
+    ow = float(load.get("ow") or 0)
+    base = load.get("brokerRate")
+    if base is None:
+        base = load.get("rate", 0)
+    base = float(base or 0)
+
+    # Header: company + "INVOICE"
+    y = height - margin
+    c.setFont("Helvetica-Bold", 20)
+    c.setFillColor(colors.black)
+    c.drawString(margin, y, "TB&S TRANSPORTATION LLC")
+
+    c.setFont("Helvetica", 10)
+    c.setFillColor(colors.grey)
+    c.drawString(margin, y - 14, "Freight & Logistics Services")
+    c.setFillColor(colors.black)
+
+    c.setFont("Helvetica-Bold", 18)
+    c.drawRightString(width - margin, y, "INVOICE")
+
+    # Thin divider line
+    y -= 32
+    c.setLineWidth(0.5)
+    c.setStrokeColor(colors.lightgrey)
+    c.line(margin, y, width - margin, y)
+    c.setStrokeColor(colors.black)
+    y -= 24
+
+    # Invoice details (right)
+    c.setFont("Helvetica", 10)
+    right_x = width - margin
+    c.drawRightString(right_x, y, f"Invoice #: {inv_no}")
+    y -= 14
+    c.drawRightString(right_x, y, f"Order #: {ord_no}")
+    y -= 14
+    c.drawRightString(right_x, y, f"Date: {date}")
+
+    # Bill To (left)
+    y_bill = height - margin - 32
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y_bill, "Bill To")
+    c.setFont("Helvetica", 10)
+    c.drawString(margin, y_bill - 16, client or "Client")
+
+    # Shipment summary
+    y = y - 24
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Shipment Details")
+    y -= 16
+    c.setFont("Helvetica", 10)
+    c.drawString(margin, y, f"From: {origin}")
+    y -= 14
+    c.drawString(margin, y, f"To:   {dest}")
+    y -= 14
+    if truck or driver:
+        c.drawString(margin, y, f"Truck: {truck}    Driver: {driver}")
+        y -= 18
+    else:
+        y -= 6
+
+    # Line items table header
+    table_y = y
+    col_desc = margin
+    col_details = margin + 250
+    col_rate = width - margin - 100
+    col_amount = width - margin
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(col_desc, table_y, "Description")
+    c.drawString(col_details, table_y, "Details")
+    c.drawRightString(col_rate, table_y, "Rate")
+    c.drawRightString(col_amount, table_y, "Amount")
+
+    table_y -= 16
+    c.setLineWidth(0.3)
+    c.setStrokeColor(colors.grey)
+    c.line(margin, table_y, width - margin, table_y)
+    c.setStrokeColor(colors.black)
+    table_y -= 12
+
+    # Single freight line item
+    c.setFont("Helvetica", 10)
+    desc = "Freight Services"
+    details_parts = []
+    miles = load.get("loadedMiles") or 0
+    try:
+        miles = float(miles)
+    except (TypeError, ValueError):
+        miles = 0
+    if miles:
+        details_parts.append(f"{miles:.0f} mi")
+    if base:
+        details_parts.append(f"Base ${base:,.2f}")
+    if detention:
+        details_parts.append(f"Detention ${detention:,.2f}")
+    if ow:
+        details_parts.append(f"Other ${ow:,.2f}")
+    details_str = " • ".join(details_parts) or "Line haul + accessorials"
+
+    c.drawString(col_desc, table_y, desc)
+    c.drawString(col_details, table_y, details_str[:60])
+    c.drawRightString(col_rate, table_y, f"${base:,.2f}")
+    c.drawRightString(col_amount, table_y, f"${amount:,.2f}")
+    table_y -= 26
+
+    # Totals block on the right
+    totals_y = table_y - 6
+    c.setFont("Helvetica", 10)
+    c.drawRightString(col_amount, totals_y, f"Base: ${base:,.2f}")
+    totals_y -= 14
+    c.drawRightString(col_amount, totals_y, f"Detention: ${detention:,.2f}")
+    totals_y -= 14
+    c.drawRightString(col_amount, totals_y, f"Other: ${ow:,.2f}")
+    totals_y -= 16
+    c.setLineWidth(0.5)
+    c.line(col_amount - 120, totals_y, col_amount, totals_y)
+    totals_y -= 18
+    c.setFont("Helvetica-Bold", 11)
+    c.drawRightString(col_amount, totals_y, f"Total Due: ${amount:,.2f}")
+
+    # Footer
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.grey)
+    c.drawString(
+        margin,
+        40,
+        "Please remit payment according to the agreed terms.",
+    )
+    c.drawRightString(
+        width - margin,
+        40,
+        "Thank you for your business.",
+    )
+    c.setFillColor(colors.black)
 
     c.showPage()
     c.save()
     buf.seek(0)
 
-    filename = f"invoice-{load.get('invoiceNo') or load.get('orderNo') or load_id}.pdf"
+    filename = f"invoice-{inv_no or ord_no or load_id}.pdf"
     return StreamingResponse(
         buf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
     )
+
 
 
 
